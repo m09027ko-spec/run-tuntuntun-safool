@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>走れ！トゥントゥントゥンサフール</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: #000;
+  touch-action: none;
+}
+canvas {
+  display: block;
+  margin: 0 auto;
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+// ============================================================
+//  走れ！トゥントゥントゥンサフール
+//  横スクロール算数ランナーゲーム
+// ============================================================
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// --- Resize ---
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// --- Constants ---
+const GROUND_RATIO = 0.72;
+const CHAR_WIDTH = 70;
+const CHAR_HEIGHT = 100;
+const GRAVITY = 0.65;
+const JUMP_FORCE = -18;
+const SCROLL_SPEED_BASE = 6;
+
+// --- Game State ---
+let state = 'title'; // title, running, result, gameover
+let score = 0;
+let level = 1;
+let scrollSpeed = SCROLL_SPEED_BASE;
+let bgOffset = 0;
+let groundOffset = 0;
+let question = null;
+let worldX = 0;
+let animTimer = 0;
+let gameOverType = '';
+let gameOverTimer = 0;
+let shakeTimer = 0;
+let shakeIntensity = 0;
+let comboCount = 0;
+let correctEffectTimer = 0;
+let particles = [];
+let runFrame = 0;
+
+// Turbo item
+let turboItemWorldX = 0;   // world X position of the turbo item
+let turboItemActive = false; // is turbo item on screen?
+let turboItemCollected = false; // was it collected?
+let turboBoost = false;     // next question gets +3 level boost
+let turboEffectTimer = 0;   // visual effect timer
+
+// Character
+let charX = 0;
+let charY = 0;
+let charVY = 0;
+let isOnGround = true;
+let isFalling = false; // for game over fall animation
+
+// Branch system - positions are in WORLD coordinates
+let branchWorldX = 0;      // world X where the branch judgment happens
+let judged = false;         // has this branch been judged yet?
+let resultTimer = 0;        // timer after judgment for animations
+let resultCorrect = false;  // was the judgment correct?
+
+// --- Character Image ---
+let charImage = null;
+let charImageLoaded = false;
+const img = new Image();
+img.onload = () => { charImage = img; charImageLoaded = true; };
+img.src = 'character.png';
+
+// --- Audio ---
+let audioCtx = null;
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+function playSound(type) {
+  try {
+    const ctx = getAudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    if (type === 'jump') {
+      osc.frequency.setValueAtTime(400, ctx.currentTime);
+      osc.frequency.linearRampToValueAtTime(800, ctx.currentTime + 0.1);
+      gain.gain.setValueAtTime(0.15, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.15);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.15);
+    } else if (type === 'correct') {
+      osc.frequency.setValueAtTime(523, ctx.currentTime);
+      osc.frequency.setValueAtTime(659, ctx.currentTime + 0.1);
+      osc.frequency.setValueAtTime(784, ctx.currentTime + 0.2);
+      gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.4);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.4);
+    } else if (type === 'wrong') {
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(200, ctx.currentTime);
+      osc.frequency.linearRampToValueAtTime(80, ctx.currentTime + 0.5);
+      gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.6);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.6);
+    } else if (type === 'start') {
+      osc.frequency.setValueAtTime(262, ctx.currentTime);
+      osc.frequency.setValueAtTime(330, ctx.currentTime + 0.12);
+      osc.frequency.setValueAtTime(392, ctx.currentTime + 0.24);
+      osc.frequency.setValueAtTime(523, ctx.currentTime + 0.36);
+      gain.gain.setValueAtTime(0.15, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.5);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.5);
+    }
+  } catch (e) {}
+}
+
+// --- Math Problem Generator ---
+function generateQuestion() {
+  let a, b, op, answer;
+  if (level <= 3) {
+    a = Math.floor(Math.random() * 9) + 1;
+    b = Math.floor(Math.random() * 9) + 1;
+    op = '+'; answer = a + b;
+  } else if (level <= 6) {
+    a = Math.floor(Math.random() * 9) + 2;
+    b = Math.floor(Math.random() * (a - 1)) + 1;
+    op = '-'; answer = a - b;
+  } else if (level <= 9) {
+    if (Math.random() < 0.5) {
+      a = Math.floor(Math.random() * 20) + 10;
+      b = Math.floor(Math.random() * 10) + 1;
+      op = '+'; answer = a + b;
+    } else {
+      a = Math.floor(Math.random() * 20) + 11;
+      b = Math.floor(Math.random() * 10) + 1;
+      if (b > a) [a, b] = [b, a];
+      op = '-'; answer = a - b;
+    }
+  } else if (level <= 12) {
+    a = Math.floor(Math.random() * 9) + 1;
+    b = Math.floor(Math.random() * 9) + 1;
+    op = '×'; answer = a * b;
+  } else {
+    const r = Math.random();
+    if (r < 0.4) {
+      b = Math.floor(Math.random() * 9) + 1;
+      answer = Math.floor(Math.random() * 9) + 1;
+      a = b * answer; op = '÷';
+    } else if (r < 0.7) {
+      a = Math.floor(Math.random() * 9) + 1;
+      b = Math.floor(Math.random() * 9) + 1;
+      op = '×'; answer = a * b;
+    } else {
+      a = Math.floor(Math.random() * 30) + 10;
+      b = Math.floor(Math.random() * 15) + 1;
+      op = Math.random() < 0.5 ? '+' : '-';
+      if (op === '-' && b > a) [a, b] = [b, a];
+      answer = op === '+' ? a + b : a - b;
+    }
+  }
+  let wrong;
+  do {
+    const offset = Math.floor(Math.random() * 5) + 1;
+    wrong = Math.random() < 0.5 ? answer + offset : answer - offset;
+    if (wrong < 0) wrong = answer + offset;
+  } while (wrong === answer);
+
+  const correctOnTop = Math.random() < 0.5;
+  return {
+    text: `${a} ${op} ${b} = ?`,
+    answer, wrong,
+    topAnswer: correctOnTop ? answer : wrong,
+    bottomAnswer: correctOnTop ? wrong : answer,
+    correctIsJump: correctOnTop
+  };
+}
+
+// --- Particles ---
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 8,
+      vy: (Math.random() - 1) * 6,
+      life: 1, color,
+      size: Math.random() * 6 + 2
+    });
+  }
+}
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.15; p.life -= 0.02;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+function drawParticles() {
+  for (const p of particles) {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// --- Drawing: Character ---
+function drawCharacter(x, y, w, h, frame) {
+  if (charImageLoaded) {
+    ctx.drawImage(charImage, x - w/2, y - h, w, h);
+    return;
+  }
+  const cx = x;
+  const bottom = y;
+  const bodyW = w * 0.5;
+  const bodyH = h * 0.6;
+  const headH = h * 0.35;
+  const headW = bodyW * 0.9;
+  const legLen = h * 0.32;
+
+  // Legs
+  const legSwing = Math.sin(frame * 0.3) * 15;
+  ctx.strokeStyle = '#c8943e'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(cx - 8, bottom - legLen); ctx.lineTo(cx - 8 + legSwing, bottom); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx + 8, bottom - legLen); ctx.lineTo(cx + 8 - legSwing, bottom); ctx.stroke();
+  ctx.fillStyle = '#b8843a';
+  ctx.beginPath(); ctx.ellipse(cx - 8 + legSwing, bottom, 8, 4, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(cx + 8 - legSwing, bottom, 8, 4, 0, 0, Math.PI * 2); ctx.fill();
+
+  // Body
+  const bodyTop = bottom - legLen - bodyH;
+  const grad = ctx.createLinearGradient(cx - bodyW/2, bodyTop, cx + bodyW/2, bodyTop);
+  grad.addColorStop(0, '#c8943e'); grad.addColorStop(0.3, '#deb060');
+  grad.addColorStop(0.7, '#deb060'); grad.addColorStop(1, '#b8843a');
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.roundRect(cx - bodyW/2, bodyTop, bodyW, bodyH, [bodyW/4, bodyW/4, 4, 4]); ctx.fill();
+
+  // Arms
+  const armSwing = Math.sin(frame * 0.3 + Math.PI) * 12;
+  ctx.strokeStyle = '#c8943e'; ctx.lineWidth = 5;
+  // Left arm (free arm - longer)
+  ctx.beginPath(); ctx.moveTo(cx - bodyW/2, bodyTop + bodyH * 0.3); ctx.lineTo(cx - bodyW/2 - 20, bodyTop + bodyH * 0.7 + armSwing); ctx.stroke();
+  // Right arm (holding club) - hand at shoulder height
+  const clubArmX = cx + bodyW/2;
+  const clubArmY = bodyTop + bodyH * 0.3;
+  const clubHandX = clubArmX + 20;
+  const clubHandY = clubArmY + 14 - armSwing * 0.3;
+  ctx.beginPath(); ctx.moveTo(clubArmX, clubArmY); ctx.lineTo(clubHandX, clubHandY); ctx.stroke();
+
+  // Club (棍棒) - held up, resting on shoulder
+  const clubSwing = Math.sin(frame * 0.3) * 3;
+  // Club goes from hand upward and back over shoulder
+  const clubTipX = clubHandX - 15 + clubSwing;
+  const clubTipY = clubHandY - 40;
+  // Shaft
+  ctx.strokeStyle = '#6B4226'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(clubHandX, clubHandY); ctx.lineTo(clubTipX, clubTipY); ctx.stroke();
+  // Club head (thicker bulge at top)
+  ctx.strokeStyle = '#5A3520'; ctx.lineWidth = 11;
+  ctx.beginPath(); ctx.moveTo(clubTipX, clubTipY); ctx.lineTo(clubTipX - 3, clubTipY - 12); ctx.stroke();
+  ctx.strokeStyle = '#6B4226'; ctx.lineWidth = 9;
+  ctx.beginPath(); ctx.moveTo(clubTipX - 1, clubTipY - 2); ctx.lineTo(clubTipX - 3, clubTipY - 10); ctx.stroke();
+  // Highlight
+  ctx.strokeStyle = '#8B6240'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(clubHandX - 1, clubHandY - 3); ctx.lineTo(clubTipX + 2, clubTipY + 3); ctx.stroke();
+
+  // Head (四角い形 - 角ばった頭)
+  const headTop = bodyTop - headH + 5;
+  const headGrad = ctx.createLinearGradient(cx - headW/2, headTop, cx + headW/2, headTop);
+  headGrad.addColorStop(0, '#d4a44e'); headGrad.addColorStop(0.3, '#e8c070');
+  headGrad.addColorStop(0.7, '#e8c070'); headGrad.addColorStop(1, '#c49440');
+  ctx.fillStyle = headGrad;
+  ctx.beginPath(); ctx.roundRect(cx - headW/2, headTop, headW, headH, [4, 4, 4, 4]); ctx.fill();
+
+  // Eyes (大きめ)
+  const eyeY = headTop + headH * 0.42;
+  const eyeSpacing = headW * 0.28;
+  // White part (大きく)
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.ellipse(cx - eyeSpacing, eyeY, 11, 12, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(cx + eyeSpacing, eyeY, 11, 12, 0, 0, Math.PI * 2); ctx.fill();
+  // Eye outline
+  ctx.strokeStyle = '#3a2a10'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.ellipse(cx - eyeSpacing, eyeY, 11, 12, 0, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(cx + eyeSpacing, eyeY, 11, 12, 0, 0, Math.PI * 2); ctx.stroke();
+  // Pupils (大きく)
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.ellipse(cx - eyeSpacing + 2, eyeY + 1, 7, 8, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(cx + eyeSpacing + 2, eyeY + 1, 7, 8, 0, 0, Math.PI * 2); ctx.fill();
+  // Pupil highlights
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.ellipse(cx - eyeSpacing + 5, eyeY - 3, 2.5, 2.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(cx + eyeSpacing + 5, eyeY - 3, 2.5, 2.5, 0, 0, Math.PI * 2); ctx.fill();
+  // Eyebrows
+  ctx.strokeStyle = '#5a3a10'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(cx - eyeSpacing - 9, eyeY - 15); ctx.lineTo(cx - eyeSpacing + 9, eyeY - 17); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx + eyeSpacing - 9, eyeY - 17); ctx.lineTo(cx + eyeSpacing + 9, eyeY - 15); ctx.stroke();
+
+  // Nose (高め - 突き出た鼻)
+  ctx.fillStyle = '#c49440';
+  ctx.beginPath();
+  ctx.moveTo(cx, eyeY + 4);
+  ctx.lineTo(cx + 5, eyeY + 12);
+  ctx.lineTo(cx - 3, eyeY + 12);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#a07830'; ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Mouth (wide grin)
+  ctx.strokeStyle = '#5a3a10'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(cx, eyeY + 18, 11, 0.05 * Math.PI, 0.95 * Math.PI); ctx.stroke();
+  // Teeth hint
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(cx - 8, eyeY + 20); ctx.lineTo(cx + 8, eyeY + 20); ctx.stroke();
+}
+
+// --- Drawing: Background ---
+function drawSky() {
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.height * GROUND_RATIO);
+  grad.addColorStop(0, '#87CEEB'); grad.addColorStop(1, '#E0F0FF');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height * GROUND_RATIO);
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  const clouds = [
+    { x: 200, y: 60, w: 120, h: 40 }, { x: 500, y: 100, w: 90, h: 30 },
+    { x: 800, y: 50, w: 140, h: 45 }, { x: 1100, y: 80, w: 100, h: 35 },
+    { x: 1400, y: 40, w: 110, h: 38 },
+  ];
+  for (const c of clouds) {
+    const cx = ((c.x - bgOffset * 0.3) % (canvas.width + 300)) - 150;
+    ctx.beginPath();
+    ctx.ellipse(cx, c.y, c.w/2, c.h/2, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx - c.w * 0.25, c.y + 5, c.w * 0.3, c.h * 0.4, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx + c.w * 0.25, c.y + 5, c.w * 0.35, c.h * 0.45, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawMountains() {
+  const groundY = canvas.height * GROUND_RATIO;
+  ctx.fillStyle = '#8fbc8f';
+  const mts = [0, 300, 600, 900, 1200, 1500];
+  for (const mx of mts) {
+    const x = ((mx - bgOffset * 0.5) % (canvas.width + 400)) - 200;
+    ctx.beginPath(); ctx.moveTo(x - 150, groundY); ctx.lineTo(x, groundY - 120); ctx.lineTo(x + 150, groundY); ctx.fill();
+  }
+  ctx.fillStyle = '#6a9b6a';
+  for (const mx of mts) {
+    const x = ((mx + 150 - bgOffset * 0.7) % (canvas.width + 400)) - 200;
+    ctx.beginPath(); ctx.moveTo(x - 100, groundY); ctx.lineTo(x, groundY - 80); ctx.lineTo(x + 100, groundY); ctx.fill();
+  }
+}
+
+function drawGround() {
+  const groundY = canvas.height * GROUND_RATIO;
+  const grad = ctx.createLinearGradient(0, groundY, 0, canvas.height);
+  grad.addColorStop(0, '#8B6914'); grad.addColorStop(0.05, '#6B4F12'); grad.addColorStop(1, '#4a3510');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, groundY, canvas.width, canvas.height - groundY);
+  ctx.fillStyle = '#4CAF50';
+  ctx.fillRect(0, groundY - 4, canvas.width, 8);
+  ctx.strokeStyle = 'rgba(0,0,0,0.1)'; ctx.lineWidth = 1;
+  for (let i = 0; i < 20; i++) {
+    const lx = ((i * 80 - groundOffset) % (canvas.width + 80)) - 40;
+    ctx.beginPath(); ctx.moveTo(lx, groundY + 10); ctx.lineTo(lx + 30, groundY + 10); ctx.stroke();
+  }
+}
+
+// --- World-to-Screen helper ---
+function worldToScreen(wx) {
+  return wx - worldX + charX;
+}
+
+// --- Drawing: Turbo Item ---
+function drawTurboItem() {
+  if (!turboItemActive || turboItemCollected) return;
+  const sx = worldToScreen(turboItemWorldX);
+  if (sx < -50 || sx > canvas.width + 50) return;
+  const groundY = canvas.height * GROUND_RATIO;
+  const iy = groundY - 140 + Math.sin(animTimer * 0.08) * 8; // high in the air
+
+  // Glow
+  ctx.fillStyle = 'rgba(255, 0, 255, 0.15)';
+  ctx.beginPath(); ctx.arc(sx, iy, 28, 0, Math.PI * 2); ctx.fill();
+
+  // Icon background (circle)
+  const grad = ctx.createRadialGradient(sx, iy, 5, sx, iy, 20);
+  grad.addColorStop(0, '#FF66FF'); grad.addColorStop(1, '#CC00CC');
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.arc(sx, iy, 18, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(sx, iy, 18, 0, Math.PI * 2); ctx.stroke();
+
+  // Lightning bolt icon
+  ctx.fillStyle = '#FFD700';
+  ctx.beginPath();
+  ctx.moveTo(sx - 4, iy - 12);
+  ctx.lineTo(sx + 6, iy - 12);
+  ctx.lineTo(sx + 1, iy - 2);
+  ctx.lineTo(sx + 8, iy - 2);
+  ctx.lineTo(sx - 3, iy + 13);
+  ctx.lineTo(sx + 1, iy + 2);
+  ctx.lineTo(sx - 6, iy + 2);
+  ctx.closePath();
+  ctx.fill();
+
+  // Label
+  ctx.fillStyle = '#FFD700'; ctx.font = 'bold 11px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('TURBO', sx, iy - 28);
+}
+
+function drawTurboEffect() {
+  if (turboEffectTimer <= 0) return;
+  const alpha = turboEffectTimer / 60;
+  ctx.fillStyle = `rgba(200, 0, 255, ${alpha * 0.2})`;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = `rgba(255, 0, 255, ${alpha})`;
+  ctx.font = `bold ${28 + (60 - turboEffectTimer) * 0.3}px sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('TURBO! レベル +3 !!', canvas.width/2, canvas.height/2 - 80);
+}
+
+// --- Drawing: Branch ---
+function drawBranch() {
+  if (!question) return;
+  const groundY = canvas.height * GROUND_RATIO;
+
+  // Layout: signs appear 250px before judgment, trap is 200px after judgment
+  // Upper platform is long (500px) so player can clearly see the path
+  const signOffset = 250;   // signs appear this far before judgment
+  const trapOffset = 200;   // trap is this far after judgment
+  const platformLen = 500;  // upper platform length
+
+  const signScreenX = worldToScreen(branchWorldX - signOffset);
+  const branchScreenX = worldToScreen(branchWorldX);
+  const dangerScreenX = worldToScreen(branchWorldX + trapOffset);
+  const platformEndX = worldToScreen(branchWorldX - 50 + platformLen);
+
+  // Don't draw if entirely off screen
+  if (signScreenX > canvas.width + 300 || platformEndX < -200) return;
+
+  const topY = groundY - 150;
+
+  // Draw the split path lines
+  const splitStartScreenX = worldToScreen(branchWorldX - signOffset - 100);
+  ctx.lineWidth = 3;
+
+  // Upper path curve
+  ctx.strokeStyle = '#FFD700';
+  ctx.beginPath();
+  ctx.moveTo(splitStartScreenX, groundY - 4);
+  ctx.quadraticCurveTo(branchScreenX - 80, topY - 30, branchScreenX - 50, topY);
+  ctx.lineTo(platformEndX, topY);
+  ctx.stroke();
+
+  // Upper platform (long!)
+  ctx.fillStyle = '#8B6914';
+  ctx.fillRect(branchScreenX - 50, topY - 4, platformLen, 20);
+  ctx.fillStyle = '#4CAF50';
+  ctx.fillRect(branchScreenX - 50, topY - 8, platformLen, 8);
+
+  // Lower path line
+  ctx.strokeStyle = '#FF6347';
+  ctx.beginPath();
+  ctx.moveTo(splitStartScreenX, groundY - 4);
+  ctx.lineTo(platformEndX, groundY - 4);
+  ctx.stroke();
+
+  // --- Answer Signs (placed well before judgment line) ---
+  const signW = 85, signH = 58;
+
+  // Top sign (jump answer)
+  const topSignSX = worldToScreen(branchWorldX - signOffset);
+  const topSignY = topY - 75;
+  ctx.fillStyle = '#FFD700'; ctx.strokeStyle = '#B8860B'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.roundRect(topSignSX, topSignY, signW, signH, 12); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#B8860B'; ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('▲ ジャンプ', topSignSX + signW/2, topSignY - 10);
+  ctx.fillStyle = '#333'; ctx.font = 'bold 32px sans-serif';
+  ctx.fillText(question.topAnswer, topSignSX + signW/2, topSignY + signH/2);
+
+  // Bottom sign (straight answer)
+  const botSignSX = worldToScreen(branchWorldX - signOffset);
+  const botSignY = groundY - 80;
+  ctx.fillStyle = '#FF6347'; ctx.strokeStyle = '#B22222'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.roundRect(botSignSX, botSignY, signW, signH, 12); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#B22222'; ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('▶ まっすぐ', botSignSX + signW/2, botSignY - 10);
+  ctx.fillStyle = '#333'; ctx.font = 'bold 32px sans-serif';
+  ctx.fillText(question.bottomAnswer, botSignSX + signW/2, botSignY + signH/2);
+
+  // --- Danger on wrong path (only visible AFTER judgment, so player must calculate) ---
+  if (judged && dangerScreenX < canvas.width + 100) {
+    if (question.correctIsJump) {
+      drawPit(dangerScreenX, groundY);
+    } else {
+      drawSpikes(dangerScreenX, topY - 8);
+    }
+  }
+
+  // --- Judgment line indicator (subtle dotted line) ---
+  const judgeLine = branchScreenX;
+  if (judgeLine > -50 && judgeLine < canvas.width + 50) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 8]);
+    ctx.beginPath();
+    ctx.moveTo(judgeLine, topY - 90);
+    ctx.lineTo(judgeLine, groundY + 10);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+function drawPit(x, groundY) {
+  ctx.fillStyle = '#1a1a1a';
+  ctx.beginPath();
+  ctx.moveTo(x - 40, groundY - 4);
+  ctx.lineTo(x - 30, groundY + 60);
+  ctx.lineTo(x + 30, groundY + 60);
+  ctx.lineTo(x + 40, groundY - 4);
+  ctx.fill();
+  ctx.fillStyle = '#FFD700';
+  ctx.fillRect(x - 45, groundY - 8, 10, 8);
+  ctx.fillRect(x + 35, groundY - 8, 10, 8);
+}
+
+function drawSpikes(x, y) {
+  ctx.fillStyle = '#888'; ctx.strokeStyle = '#555'; ctx.lineWidth = 1;
+  for (let i = 0; i < 5; i++) {
+    const sx = x - 20 + i * 12;
+    ctx.beginPath(); ctx.moveTo(sx, y); ctx.lineTo(sx + 6, y - 25); ctx.lineTo(sx + 12, y); ctx.fill(); ctx.stroke();
+  }
+}
+
+// --- Drawing: Question ---
+function drawQuestion() {
+  if (!question) return;
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.beginPath(); ctx.roundRect(canvas.width/2 - 160, 35, 320, 60, 15); ctx.fill();
+  ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.roundRect(canvas.width/2 - 160, 35, 320, 60, 15); ctx.stroke();
+  ctx.fillStyle = '#FFF'; ctx.font = 'bold 32px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(question.text, canvas.width/2, 65);
+}
+
+// --- Drawing: UI ---
+function drawScore() {
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.beginPath(); ctx.roundRect(canvas.width - 160, 10, 150, 45, 10); ctx.fill();
+  ctx.fillStyle = '#FFD700'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  ctx.fillText(`スコア: ${score}`, canvas.width - 20, 32);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.beginPath(); ctx.roundRect(canvas.width - 160, 60, 150, 35, 10); ctx.fill();
+  ctx.fillStyle = '#90EE90'; ctx.font = 'bold 15px sans-serif';
+  ctx.fillText(`レベル: ${level}`, canvas.width - 20, 78);
+
+  if (comboCount > 1) {
+    ctx.fillStyle = '#FF6347'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(`${comboCount} コンボ！`, canvas.width/2, canvas.height * GROUND_RATIO - 160);
+  }
+}
+
+// --- Drawing: Title ---
+function drawTitle() {
+  drawSky(); drawMountains(); drawGround();
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const titleY = canvas.height * 0.25;
+  ctx.fillStyle = '#FFD700'; ctx.strokeStyle = '#B8860B'; ctx.lineWidth = 4;
+  ctx.font = 'bold 42px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.strokeText('走れ！', canvas.width/2, titleY - 30);
+  ctx.fillText('走れ！', canvas.width/2, titleY - 30);
+  ctx.font = 'bold 30px sans-serif';
+  ctx.strokeText('トゥントゥントゥンサフール', canvas.width/2, titleY + 20);
+  ctx.fillText('トゥントゥントゥンサフール', canvas.width/2, titleY + 20);
+
+  drawCharacter(canvas.width/2, canvas.height * 0.58, CHAR_WIDTH * 1.5, CHAR_HEIGHT * 1.5, animTimer);
+
+  ctx.fillStyle = '#FFF'; ctx.font = '18px sans-serif';
+  ctx.fillText('算数の問題に答えて走り続けよう！', canvas.width/2, canvas.height * 0.68);
+  ctx.fillStyle = '#DDD'; ctx.font = '15px sans-serif';
+  ctx.fillText('ジャンプ = タップ / スペース / ↑', canvas.width/2, canvas.height * 0.73);
+  ctx.fillText('まっすぐ = 何もしない', canvas.width/2, canvas.height * 0.77);
+
+  const btnW = 200, btnH = 55;
+  const btnX = canvas.width/2 - btnW/2, btnY = canvas.height * 0.83;
+  const pulse = Math.sin(animTimer * 0.05) * 3;
+  ctx.fillStyle = '#FF6347'; ctx.strokeStyle = '#B22222'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.roundRect(btnX - pulse, btnY - pulse, btnW + pulse*2, btnH + pulse*2, 15); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#FFF'; ctx.font = 'bold 24px sans-serif';
+  ctx.fillText('スタート！', canvas.width/2, btnY + btnH/2);
+}
+
+// --- Drawing: Game Over ---
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const centerY = canvas.height * 0.35;
+
+  ctx.fillStyle = '#FF4444'; ctx.strokeStyle = '#880000'; ctx.lineWidth = 3;
+  ctx.font = 'bold 48px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.strokeText('ゲームオーバー', canvas.width/2, centerY);
+  ctx.fillText('ゲームオーバー', canvas.width/2, centerY);
+
+  ctx.fillStyle = '#FFD700'; ctx.font = 'bold 28px sans-serif';
+  ctx.fillText(`スコア: ${score}`, canvas.width/2, centerY + 60);
+  ctx.fillStyle = '#90EE90'; ctx.font = '22px sans-serif';
+  ctx.fillText(`レベル: ${level}`, canvas.width/2, centerY + 100);
+
+  if (question) {
+    ctx.fillStyle = '#FFF'; ctx.font = '20px sans-serif';
+    ctx.fillText(`正解は ${question.answer} でした`, canvas.width/2, centerY + 145);
+  }
+
+  if (gameOverTimer > 60) {
+    const btnW = 200, btnH = 55;
+    const btnX = canvas.width/2 - btnW/2, btnY = centerY + 185;
+    const pulse = Math.sin(animTimer * 0.05) * 3;
+    ctx.fillStyle = '#4CAF50'; ctx.strokeStyle = '#2E7D32'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.roundRect(btnX - pulse, btnY - pulse, btnW + pulse*2, btnH + pulse*2, 15); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#FFF'; ctx.font = 'bold 24px sans-serif';
+    ctx.fillText('もう一回！', canvas.width/2, btnY + btnH/2);
+  }
+}
+
+// --- Drawing: Correct Effect ---
+function drawCorrectEffect() {
+  if (correctEffectTimer > 0) {
+    const alpha = correctEffectTimer / 40;
+    ctx.fillStyle = `rgba(76, 175, 80, ${alpha * 0.3})`;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = `rgba(255, 215, 0, ${alpha})`;
+    ctx.font = `bold ${40 + (40 - correctEffectTimer)}px sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('正解！', canvas.width/2, canvas.height/2 - 50);
+  }
+}
+
+// --- Game Logic ---
+function startGame() {
+  state = 'running';
+  score = 0; level = 1; comboCount = 0;
+  scrollSpeed = SCROLL_SPEED_BASE;
+  worldX = 0; bgOffset = 0; groundOffset = 0;
+  charX = canvas.width * 0.2;
+  charY = canvas.height * GROUND_RATIO;
+  charVY = 0; isOnGround = true; isFalling = false;
+  particles = []; correctEffectTimer = 0;
+  turboBoost = false; turboEffectTimer = 0;
+  setupNextBranch();
+  playSound('start');
+}
+
+function setupNextBranch() {
+  question = generateQuestion();
+  branchWorldX = worldX + canvas.width * 2.0;
+  judged = false;
+  resultTimer = 0;
+  // Spawn turbo item midway between current position and branch, high in the air
+  turboItemWorldX = worldX + canvas.width * 1.0;
+  turboItemActive = true;
+  turboItemCollected = false;
+}
+
+function doJump() {
+  if (state !== 'running' && state !== 'result') return;
+  if (!isOnGround) return; // no double jump
+  charVY = JUMP_FORCE;
+  isOnGround = false;
+  playSound('jump');
+}
+
+// --- Core: Check if character reached the branch judgment point ---
+function checkBranchJudgment() {
+  if (judged || !question) return;
+
+  // The character's world X position
+  const charWorldX = worldX;
+
+  // Has the character reached the judgment line?
+  if (charWorldX >= branchWorldX) {
+    judged = true;
+    resultTimer = 0;
+
+    // Determine: is the character in the air or on the ground?
+    const groundY = canvas.height * GROUND_RATIO;
+    const isInAir = charY < groundY - 20; // threshold: at least 20px above ground
+
+    const isCorrect = isInAir === question.correctIsJump;
+
+    if (isCorrect) {
+      resultCorrect = true;
+      score++;
+      comboCount++;
+      if (score % 2 === 0) {
+        level++;
+        scrollSpeed = SCROLL_SPEED_BASE + level * 0.3;
+      }
+      correctEffectTimer = 40;
+      spawnParticles(charX, charY - CHAR_HEIGHT/2, '#FFD700', 15);
+      playSound('correct');
+      state = 'result';
+    } else {
+      resultCorrect = false;
+      comboCount = 0;
+      gameOverType = isInAir ? 'spike' : 'pit';
+      shakeTimer = 20;
+      shakeIntensity = 8;
+      playSound('wrong');
+      state = 'result';
+
+      if (gameOverType === 'pit') {
+        isFalling = true;
+      }
+    }
+  }
+}
+
+// --- Input ---
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') {
+    e.preventDefault();
+    if (state === 'title') startGame();
+    else if (state === 'gameover' && gameOverTimer > 60) startGame();
+    else doJump();
+  }
+});
+
+canvas.addEventListener('click', () => {
+  if (state === 'title') startGame();
+  else if (state === 'gameover' && gameOverTimer > 60) startGame();
+  else doJump();
+});
+
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  if (state === 'title') startGame();
+  else if (state === 'gameover' && gameOverTimer > 60) startGame();
+  else doJump();
+});
+
+// --- Main Loop ---
+function update() {
+  animTimer++;
+  const groundY = canvas.height * GROUND_RATIO;
+
+  if (state === 'running') {
+    worldX += scrollSpeed;
+    bgOffset += scrollSpeed;
+    groundOffset += scrollSpeed;
+    runFrame += 0.25;
+
+    // Character physics - always active
+    if (!isOnGround) {
+      charVY += GRAVITY;
+      charY += charVY;
+      if (charY >= groundY) {
+        charY = groundY;
+        charVY = 0;
+        isOnGround = true;
+      }
+    }
+
+    // Check turbo item collision (must be jumping - item is high up)
+    if (turboItemActive && !turboItemCollected) {
+      const itemScreenX = worldToScreen(turboItemWorldX);
+      const itemY = groundY - 140 + Math.sin(animTimer * 0.08) * 8;
+      const dx = Math.abs(charX - itemScreenX);
+      const dy = Math.abs((charY - CHAR_HEIGHT/2) - itemY);
+      if (dx < 45 && dy < 45) {
+        turboItemCollected = true;
+        turboItemActive = false;
+        // Permanent level boost +3
+        level += 3;
+        scrollSpeed = SCROLL_SPEED_BASE + level * 0.3;
+        turboEffectTimer = 60;
+        spawnParticles(charX, charY - CHAR_HEIGHT/2, '#FF00FF', 20);
+        playSound('correct');
+      }
+    }
+    if (turboEffectTimer > 0) turboEffectTimer--;
+
+    // Check branch judgment
+    checkBranchJudgment();
+    if (correctEffectTimer > 0) correctEffectTimer--;
+  }
+
+  if (state === 'result') {
+    resultTimer++;
+
+    // Keep scrolling slowly
+    worldX += scrollSpeed * 0.5;
+    bgOffset += scrollSpeed * 0.5;
+    groundOffset += scrollSpeed * 0.5;
+
+    // Character physics
+    if (!isOnGround && !isFalling) {
+      charVY += GRAVITY;
+      charY += charVY;
+      if (charY >= groundY) {
+        charY = groundY;
+        charVY = 0;
+        isOnGround = true;
+      }
+    }
+
+    // Falling into pit animation
+    if (isFalling) {
+      charVY += GRAVITY * 0.5;
+      charY += charVY;
+    }
+
+    if (correctEffectTimer > 0) correctEffectTimer--;
+    if (shakeTimer > 0) shakeTimer--;
+
+    // After delay, transition
+    if (resultCorrect && resultTimer > 50) {
+      // Next question
+      setupNextBranch();
+      state = 'running';
+    } else if (!resultCorrect && resultTimer > 70) {
+      state = 'gameover';
+      gameOverTimer = 0;
+    }
+  }
+
+  if (state === 'gameover') {
+    gameOverTimer++;
+  }
+
+  updateParticles();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  let shakeX = 0, shakeY = 0;
+  if (shakeTimer > 0) {
+    shakeX = (Math.random() - 0.5) * shakeIntensity;
+    shakeY = (Math.random() - 0.5) * shakeIntensity;
+    ctx.save(); ctx.translate(shakeX, shakeY);
+  }
+
+  if (state === 'title') {
+    drawTitle();
+  } else {
+    drawSky();
+    drawMountains();
+    drawGround();
+    drawTurboItem();
+    drawBranch();
+    drawCharacter(charX, charY, CHAR_WIDTH, CHAR_HEIGHT, runFrame);
+    drawQuestion();
+    drawScore();
+    drawTurboEffect();
+    drawCorrectEffect();
+    drawParticles();
+    if (state === 'gameover') drawGameOver();
+  }
+
+  if (shakeTimer > 0) ctx.restore();
+}
+
+function gameLoop() {
+  update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+
+gameLoop();
+</script>
+</body>
+</html>
