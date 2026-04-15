@@ -62,9 +62,13 @@ const CHAR_HEIGHT = 100;
 const GRAVITY = 0.65;
 const JUMP_FORCE = -18;
 const SCROLL_SPEED_BASE = 6;
+const PLATFORM_LEN = 500;     // 上ルートの長さ（world 座標）
+const PLATFORM_HEIGHT = 150;  // 地面から上ルート上面までの高さ
+const EVOLUTION_TURBO_COUNT = 5; // 進化に必要なターボ取得数
+const SLOW_TRIGGER_DIST = 400;   // 進化後スローを発動する分岐までの距離
 
 // --- Game State ---
-let state = 'title'; // title, running, result, gameover
+let state = 'title'; // title, select, running, result, gameover
 let score = 0;
 let level = 1;
 let scrollSpeed = SCROLL_SPEED_BASE;
@@ -88,6 +92,11 @@ let turboItemActive = false; // is turbo item on screen?
 let turboItemCollected = false; // was it collected?
 let turboBoost = false;     // next question gets +3 level boost
 let turboEffectTimer = 0;   // visual effect timer
+let turboCount = 0;         // 取得した累計ターボ数（進化判定用）
+
+// Evolution
+let evolved = false;
+let evolutionTimer = 0;     // 進化演出タイマー（60→0）
 
 // Character
 let charX = 0;
@@ -96,11 +105,19 @@ let charVY = 0;
 let isOnGround = true;
 let isFalling = false; // for game over fall animation
 
+// Platform (上ルート)
+let currentPlatform = null; // { x1, x2, topY } in world/screen coords. null = 存在しない
+let onPlatform = false;     // 現在プラットフォーム上に乗っているか
+
 // Branch system - positions are in WORLD coordinates
 let branchWorldX = 0;      // world X where the branch judgment happens
 let judged = false;         // has this branch been judged yet?
 let resultTimer = 0;        // timer after judgment for animations
 let resultCorrect = false;  // was the judgment correct?
+
+// Character selection
+let selectedCharacter = 'safool'; // デフォルト
+let selectHoverIndex = 0;         // キャラ選択画面のフォーカス
 
 // --- Character Image ---
 let charImage = null;
@@ -108,6 +125,50 @@ let charImageLoaded = false;
 const img = new Image();
 img.onload = () => { charImage = img; charImageLoaded = true; };
 img.src = 'character.png';
+
+// --- Character Definitions (draw functions assigned after drawSafool etc. are declared) ---
+const CHARACTERS = [
+  {
+    id: 'safool',
+    name: 'トゥントゥントゥンサフール',
+    subtitle: 'バランス型',
+    baseSpeed: 6,
+    growth: 0.3,
+    speedCap: 13,
+    themeColor: '#deb060',
+    draw: null, // assigned later
+  },
+  {
+    id: 'bombar',
+    name: 'ボンバルディロ・クロコディロ',
+    subtitle: '重量級・じわじわ加速',
+    baseSpeed: 5,
+    growth: 0.25,
+    speedCap: 11,
+    themeColor: '#3e7d4f',
+    draw: null,
+  },
+  {
+    id: 'tralala',
+    name: 'トラララ・トラララ',
+    subtitle: '高速型・すぐに速くなる',
+    baseSpeed: 7,
+    growth: 0.35,
+    speedCap: 14,
+    themeColor: '#4a8dd8',
+    draw: null,
+  },
+];
+
+function getSelectedCharacter() {
+  return CHARACTERS.find(c => c.id === selectedCharacter) || CHARACTERS[0];
+}
+
+// --- Speed Computation (単一ソース) ---
+function computeSpeed() {
+  const ch = getSelectedCharacter();
+  return Math.min(ch.baseSpeed + level * ch.growth, ch.speedCap);
+}
 
 // --- Audio ---
 let audioCtx = null;
@@ -250,9 +311,54 @@ function drawParticles() {
   ctx.globalAlpha = 1;
 }
 
-// --- Drawing: Character ---
-function drawCharacter(x, y, w, h, frame) {
-  if (charImageLoaded) {
+// --- Drawing: Character Dispatcher ---
+// selectedCharacter に応じたキャラ固有の draw を呼び出し、必要なら進化オーラを重ねる。
+// overrideId を指定するとキャラ選択画面などで特定キャラを描ける。
+function drawCharacter(x, y, w, h, frame, overrideId) {
+  const id = overrideId || selectedCharacter;
+  const ch = CHARACTERS.find(c => c.id === id) || CHARACTERS[0];
+
+  // 進化オーラ（override 時は描かない）
+  if (!overrideId && evolved) {
+    const pulse = Math.sin(frame * 0.15) * 6;
+    const rx = w * 0.55 + pulse;
+    const ry = h * 0.55 + pulse;
+    const cy = y - h * 0.5;
+    ctx.save();
+    const grad = ctx.createRadialGradient(x, cy, 5, x, cy, Math.max(rx, ry));
+    grad.addColorStop(0, 'rgba(255, 230, 120, 0.45)');
+    grad.addColorStop(0.6, 'rgba(255, 180, 80, 0.2)');
+    grad.addColorStop(1, 'rgba(255, 140, 0, 0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.ellipse(x, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // 進化演出（最初の60フレーム光る拡大リング）
+  if (!overrideId && evolutionTimer > 0) {
+    const t = 1 - evolutionTimer / 60;
+    ctx.save();
+    ctx.globalAlpha = (1 - t);
+    ctx.strokeStyle = '#FFD700';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(x, y - h * 0.5, 30 + t * 120, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  if (ch.draw) {
+    ch.draw(x, y, w, h, frame);
+  } else {
+    drawSafool(x, y, w, h, frame);
+  }
+}
+
+// --- Drawing: Safool (original, default character) ---
+function drawSafool(x, y, w, h, frame) {
+  if (charImageLoaded && selectedCharacter === 'safool') {
     ctx.drawImage(charImage, x - w/2, y - h, w, h);
     return;
   }
@@ -360,6 +466,239 @@ function drawCharacter(x, y, w, h, frame) {
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.moveTo(cx - 8, eyeY + 20); ctx.lineTo(cx + 8, eyeY + 20); ctx.stroke();
 }
+
+// --- Drawing: Bombar (ボンバルディロ・クロコディロ: ワニ＋爆撃機) ---
+function drawBombar(x, y, w, h, frame) {
+  const cx = x;
+  const bottom = y;
+  const bodyW = w * 0.6;
+  const bodyH = h * 0.55;
+  const legLen = h * 0.22; // 短め（重量級）
+
+  // Legs (ワニ足・短太)
+  const legSwing = Math.sin(frame * 0.25) * 10;
+  ctx.strokeStyle = '#2e6b3f'; ctx.lineWidth = 8; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(cx - 10, bottom - legLen); ctx.lineTo(cx - 10 + legSwing, bottom); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx + 10, bottom - legLen); ctx.lineTo(cx + 10 - legSwing, bottom); ctx.stroke();
+  ctx.fillStyle = '#1f4f2e';
+  ctx.beginPath(); ctx.ellipse(cx - 10 + legSwing, bottom, 11, 5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(cx + 10 - legSwing, bottom, 11, 5, 0, 0, Math.PI * 2); ctx.fill();
+
+  // Body (爆撃機の機体 = 銀色)
+  const bodyTop = bottom - legLen - bodyH;
+  const bodyGrad = ctx.createLinearGradient(cx - bodyW/2, bodyTop, cx + bodyW/2, bodyTop);
+  bodyGrad.addColorStop(0, '#8a9aa5'); bodyGrad.addColorStop(0.5, '#c8d2d8'); bodyGrad.addColorStop(1, '#8a9aa5');
+  ctx.fillStyle = bodyGrad;
+  ctx.beginPath();
+  ctx.roundRect(cx - bodyW/2, bodyTop, bodyW, bodyH, [bodyW/3, bodyW/3, 6, 6]);
+  ctx.fill();
+  ctx.strokeStyle = '#556066'; ctx.lineWidth = 1.5; ctx.stroke();
+
+  // Wings (機体横の翼)
+  ctx.fillStyle = '#7a8a95';
+  ctx.beginPath();
+  ctx.moveTo(cx - bodyW/2, bodyTop + bodyH * 0.4);
+  ctx.lineTo(cx - bodyW/2 - 22, bodyTop + bodyH * 0.55);
+  ctx.lineTo(cx - bodyW/2 - 18, bodyTop + bodyH * 0.7);
+  ctx.lineTo(cx - bodyW/2, bodyTop + bodyH * 0.6);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(cx + bodyW/2, bodyTop + bodyH * 0.4);
+  ctx.lineTo(cx + bodyW/2 + 22, bodyTop + bodyH * 0.55);
+  ctx.lineTo(cx + bodyW/2 + 18, bodyTop + bodyH * 0.7);
+  ctx.lineTo(cx + bodyW/2, bodyTop + bodyH * 0.6);
+  ctx.closePath(); ctx.fill();
+
+  // Bomb (body 下の爆弾)
+  ctx.fillStyle = '#333';
+  ctx.beginPath();
+  ctx.ellipse(cx, bodyTop + bodyH - 4, bodyW * 0.18, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#ff4444';
+  ctx.beginPath(); ctx.arc(cx, bodyTop + bodyH - 4, 3, 0, Math.PI * 2); ctx.fill();
+
+  // Head (ワニの頭 - 細長)
+  const headW = bodyW * 1.1;
+  const headH = h * 0.28;
+  const headTop = bodyTop - headH + 5;
+  const headGrad = ctx.createLinearGradient(cx - headW/2, headTop, cx + headW/2, headTop);
+  headGrad.addColorStop(0, '#2e6b3f'); headGrad.addColorStop(0.5, '#4a8a55'); headGrad.addColorStop(1, '#2e6b3f');
+  ctx.fillStyle = headGrad;
+  // 頭 = 丸い後頭部
+  ctx.beginPath();
+  ctx.roundRect(cx - headW/2, headTop, headW * 0.7, headH, [headH/3, 4, 4, headH/3]);
+  ctx.fill();
+  // Snout (口吻 - 右に伸びる)
+  ctx.fillStyle = '#4a8a55';
+  ctx.beginPath();
+  ctx.roundRect(cx + headW * 0.2 - headW/2, headTop + headH * 0.3, headW * 0.55, headH * 0.6, [4, 8, 8, 4]);
+  ctx.fill();
+  ctx.strokeStyle = '#2e4f30'; ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Teeth (歯並び)
+  ctx.fillStyle = '#fff';
+  for (let i = 0; i < 5; i++) {
+    const tx = cx + headW * 0.22 + i * 8 - headW/2;
+    ctx.beginPath();
+    ctx.moveTo(tx, headTop + headH * 0.85);
+    ctx.lineTo(tx + 3, headTop + headH * 0.95);
+    ctx.lineTo(tx + 6, headTop + headH * 0.85);
+    ctx.fill();
+  }
+
+  // Eye (片目強調 - ワニらしさ)
+  const eyeX = cx - headW * 0.1;
+  const eyeY = headTop + headH * 0.35;
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.ellipse(eyeX, eyeY, 10, 11, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#1f3e25'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.ellipse(eyeX, eyeY, 10, 11, 0, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.ellipse(eyeX + 1, eyeY + 1, 6, 7, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(eyeX + 3, eyeY - 3, 2, 0, Math.PI * 2); ctx.fill();
+
+  // Propeller (頭上のプロペラ - アニメ)
+  const propAngle = frame * 0.8;
+  ctx.strokeStyle = '#444'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(cx, headTop - 4); ctx.lineTo(cx, headTop - 14); ctx.stroke();
+  ctx.save();
+  ctx.translate(cx, headTop - 16);
+  ctx.rotate(propAngle);
+  ctx.fillStyle = 'rgba(120,120,120,0.75)';
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 18, 3, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = '#555';
+  ctx.beginPath(); ctx.arc(cx, headTop - 16, 3, 0, Math.PI * 2); ctx.fill();
+}
+
+// --- Drawing: Tralala (トラララ・トラララ: サメ＋スニーカー) ---
+function drawTralala(x, y, w, h, frame) {
+  const cx = x;
+  const bottom = y;
+  const bodyW = w * 0.55;
+  const bodyH = h * 0.62;
+  const legLen = h * 0.28;
+
+  // Legs (スニーカー履き)
+  const legSwing = Math.sin(frame * 0.35) * 18; // 高速
+  ctx.strokeStyle = '#4a8dd8'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(cx - 9, bottom - legLen); ctx.lineTo(cx - 9 + legSwing, bottom - 6); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx + 9, bottom - legLen); ctx.lineTo(cx + 9 - legSwing, bottom - 6); ctx.stroke();
+
+  // Sneakers
+  const leftShoeX = cx - 9 + legSwing;
+  const rightShoeX = cx + 9 - legSwing;
+  for (const sx of [leftShoeX, rightShoeX]) {
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.roundRect(sx - 13, bottom - 6, 22, 10, [10, 10, 4, 4]);
+    ctx.fill();
+    ctx.strokeStyle = '#222'; ctx.lineWidth = 1.5; ctx.stroke();
+    // Sneaker stripe
+    ctx.fillStyle = '#ff3366';
+    ctx.fillRect(sx - 8, bottom - 3, 14, 3);
+    // Sole
+    ctx.fillStyle = '#222';
+    ctx.fillRect(sx - 13, bottom + 2, 22, 3);
+  }
+
+  // Body (サメ身体 = 青グラデ)
+  const bodyTop = bottom - legLen - bodyH;
+  const bodyGrad = ctx.createLinearGradient(cx - bodyW/2, bodyTop, cx + bodyW/2, bodyTop + bodyH);
+  bodyGrad.addColorStop(0, '#3a6fb8'); bodyGrad.addColorStop(0.5, '#6aa3e0'); bodyGrad.addColorStop(1, '#2f5593');
+  ctx.fillStyle = bodyGrad;
+  ctx.beginPath();
+  ctx.roundRect(cx - bodyW/2, bodyTop, bodyW, bodyH, [bodyW/3, bodyW/3, 8, 8]);
+  ctx.fill();
+  ctx.strokeStyle = '#1e3a68'; ctx.lineWidth = 1.5; ctx.stroke();
+
+  // Belly
+  ctx.fillStyle = '#d8e6f5';
+  ctx.beginPath();
+  ctx.roundRect(cx - bodyW*0.3, bodyTop + bodyH*0.35, bodyW*0.6, bodyH*0.5, 8);
+  ctx.fill();
+
+  // Fin (背びれ)
+  ctx.fillStyle = '#2f5593';
+  ctx.beginPath();
+  ctx.moveTo(cx, bodyTop - 5);
+  ctx.lineTo(cx + 15, bodyTop + 15);
+  ctx.lineTo(cx - 10, bodyTop + 12);
+  ctx.closePath();
+  ctx.fill();
+
+  // Head (サメ頭 - 尖った)
+  const headW = bodyW * 1.05;
+  const headH = h * 0.32;
+  const headTop = bodyTop - headH + 8;
+  const headGrad = ctx.createLinearGradient(cx - headW/2, headTop, cx + headW/2, headTop + headH);
+  headGrad.addColorStop(0, '#3a6fb8'); headGrad.addColorStop(0.5, '#6aa3e0'); headGrad.addColorStop(1, '#2f5593');
+  ctx.fillStyle = headGrad;
+  // 丸い後頭部 + 尖った口先
+  ctx.beginPath();
+  ctx.moveTo(cx - headW/2 + 8, headTop);
+  ctx.quadraticCurveTo(cx - headW/2 - 4, headTop + headH/2, cx - headW/2 + 4, headTop + headH - 2);
+  ctx.lineTo(cx + headW/2 - 10, headTop + headH - 2);
+  ctx.quadraticCurveTo(cx + headW/2 + 12, headTop + headH * 0.55, cx + headW/2 - 2, headTop + 6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#1e3a68'; ctx.lineWidth = 1.5; ctx.stroke();
+
+  // Gills (エラ)
+  ctx.strokeStyle = '#1e3a68'; ctx.lineWidth = 1.2;
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    ctx.moveTo(cx - headW/2 + 10, headTop + headH * 0.45 + i * 4);
+    ctx.lineTo(cx - headW/2 + 16, headTop + headH * 0.6 + i * 4);
+    ctx.stroke();
+  }
+
+  // Mouth (ギザ歯)
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.moveTo(cx + headW * 0.05, headTop + headH * 0.75);
+  for (let i = 0; i < 6; i++) {
+    const tx = cx + headW * 0.05 + i * 5;
+    ctx.lineTo(tx + 2.5, headTop + headH * 0.85);
+    ctx.lineTo(tx + 5, headTop + headH * 0.75);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#1e3a68'; ctx.lineWidth = 1; ctx.stroke();
+
+  // Eyes
+  const eyeY = headTop + headH * 0.35;
+  const eyeSpacing = headW * 0.2;
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.ellipse(cx - eyeSpacing, eyeY, 9, 10, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(cx + eyeSpacing, eyeY, 9, 10, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.ellipse(cx - eyeSpacing + 1, eyeY + 1, 5, 6, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(cx + eyeSpacing + 1, eyeY + 1, 5, 6, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(cx - eyeSpacing + 3, eyeY - 2, 1.5, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(cx + eyeSpacing + 3, eyeY - 2, 1.5, 0, Math.PI * 2); ctx.fill();
+
+  // Speed lines (高速感)
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2;
+  const lineOffset = (frame * 4) % 16;
+  for (let i = 0; i < 3; i++) {
+    const ly = bodyTop + bodyH * 0.3 + i * 12;
+    ctx.beginPath();
+    ctx.moveTo(cx - bodyW/2 - 15 - lineOffset, ly);
+    ctx.lineTo(cx - bodyW/2 - 4 - lineOffset, ly);
+    ctx.stroke();
+  }
+}
+
+// Assign draw functions to CHARACTERS
+CHARACTERS[0].draw = drawSafool;
+CHARACTERS[1].draw = drawBombar;
+CHARACTERS[2].draw = drawTralala;
 
 // --- Drawing: Background ---
 function drawSky() {
@@ -604,10 +943,47 @@ function drawScore() {
   ctx.fillStyle = '#90EE90'; ctx.font = 'bold 15px sans-serif';
   ctx.fillText(`レベル: ${level}`, canvas.width - 20, 78);
 
+  // Turbo count / Evolved HUD
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.beginPath(); ctx.roundRect(canvas.width - 160, 100, 150, 35, 10); ctx.fill();
+  if (evolved) {
+    ctx.fillStyle = '#FFD700'; ctx.font = 'bold 15px sans-serif';
+    ctx.fillText('✨ EVOLVED', canvas.width - 20, 118);
+  } else {
+    ctx.fillStyle = '#FF99FF'; ctx.font = 'bold 15px sans-serif';
+    ctx.fillText(`✨ ${turboCount}/${EVOLUTION_TURBO_COUNT}`, canvas.width - 20, 118);
+  }
+
   if (comboCount > 1) {
     ctx.fillStyle = '#FF6347'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center';
     ctx.fillText(`${comboCount} コンボ！`, canvas.width/2, canvas.height * GROUND_RATIO - 160);
   }
+}
+
+// --- Drawing: Slow-effect vignette (進化後の分岐接近時) ---
+function drawSlowEffect() {
+  if (!evolved || !question || judged) return;
+  const dist = branchWorldX - worldX;
+  if (dist <= 0 || dist >= SLOW_TRIGGER_DIST) return;
+  const strength = 1 - (dist / SLOW_TRIGGER_DIST); // 0..1
+  // 青いビネット
+  const grad = ctx.createRadialGradient(
+    canvas.width/2, canvas.height/2, Math.min(canvas.width, canvas.height) * 0.3,
+    canvas.width/2, canvas.height/2, Math.max(canvas.width, canvas.height) * 0.7
+  );
+  grad.addColorStop(0, 'rgba(100, 180, 255, 0)');
+  grad.addColorStop(1, `rgba(60, 120, 220, ${0.45 * strength})`);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // SLOW ラベル
+  ctx.fillStyle = `rgba(200, 230, 255, ${0.8 * strength})`;
+  ctx.strokeStyle = `rgba(40, 90, 180, ${0.9 * strength})`;
+  ctx.lineWidth = 3;
+  ctx.font = 'bold 32px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.strokeText('～ SLOW ～', canvas.width/2, 150);
+  ctx.fillText('～ SLOW ～', canvas.width/2, 150);
 }
 
 // --- Drawing: Title ---
@@ -625,7 +1001,7 @@ function drawTitle() {
   ctx.strokeText('トゥントゥントゥンサフール', canvas.width/2, titleY + 20);
   ctx.fillText('トゥントゥントゥンサフール', canvas.width/2, titleY + 20);
 
-  drawCharacter(canvas.width/2, canvas.height * 0.58, CHAR_WIDTH * 1.5, CHAR_HEIGHT * 1.5, animTimer);
+  drawCharacter(canvas.width/2, canvas.height * 0.58, CHAR_WIDTH * 1.5, CHAR_HEIGHT * 1.5, animTimer, 'safool');
 
   ctx.fillStyle = '#FFF'; ctx.font = '18px sans-serif';
   ctx.fillText('算数の問題に答えて走り続けよう！', canvas.width/2, canvas.height * 0.68);
@@ -639,7 +1015,113 @@ function drawTitle() {
   ctx.fillStyle = '#FF6347'; ctx.strokeStyle = '#B22222'; ctx.lineWidth = 3;
   ctx.beginPath(); ctx.roundRect(btnX - pulse, btnY - pulse, btnW + pulse*2, btnH + pulse*2, 15); ctx.fill(); ctx.stroke();
   ctx.fillStyle = '#FFF'; ctx.font = 'bold 24px sans-serif';
-  ctx.fillText('スタート！', canvas.width/2, btnY + btnH/2);
+  ctx.fillText('キャラ選択へ', canvas.width/2, btnY + btnH/2);
+}
+
+// --- Drawing: Character Select ---
+function getSelectCardRects() {
+  const n = CHARACTERS.length;
+  const cardW = Math.min(canvas.width / (n + 1), 220);
+  const cardH = cardW * 1.4;
+  const gap = 20;
+  const totalW = cardW * n + gap * (n - 1);
+  const startX = (canvas.width - totalW) / 2;
+  const y = canvas.height * 0.32;
+  return CHARACTERS.map((c, i) => ({
+    x: startX + i * (cardW + gap),
+    y,
+    w: cardW,
+    h: cardH,
+    char: c,
+  }));
+}
+
+function drawSelect() {
+  drawSky(); drawMountains(); drawGround();
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = '#FFD700'; ctx.strokeStyle = '#B8860B'; ctx.lineWidth = 3;
+  ctx.font = 'bold 34px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.strokeText('キャラクターを選ぼう', canvas.width/2, canvas.height * 0.15);
+  ctx.fillText('キャラクターを選ぼう', canvas.width/2, canvas.height * 0.15);
+
+  const rects = getSelectCardRects();
+  for (const r of rects) {
+    const isSelected = r.char.id === selectedCharacter;
+    const pulse = isSelected ? Math.sin(animTimer * 0.08) * 4 : 0;
+
+    // Card background
+    ctx.fillStyle = isSelected ? 'rgba(255, 215, 0, 0.2)' : 'rgba(255,255,255,0.1)';
+    ctx.strokeStyle = isSelected ? '#FFD700' : 'rgba(255,255,255,0.4)';
+    ctx.lineWidth = isSelected ? 5 : 2;
+    ctx.beginPath();
+    ctx.roundRect(r.x - pulse, r.y - pulse, r.w + pulse*2, r.h + pulse*2, 16);
+    ctx.fill(); ctx.stroke();
+
+    // Character preview
+    const previewX = r.x + r.w / 2;
+    const previewY = r.y + r.h * 0.58;
+    const previewW = Math.min(r.w * 0.5, CHAR_WIDTH * 1.5);
+    const previewH = previewW * (CHAR_HEIGHT / CHAR_WIDTH);
+    drawCharacter(previewX, previewY, previewW, previewH, animTimer, r.char.id);
+
+    // Name
+    ctx.fillStyle = '#FFF'; ctx.strokeStyle = '#000'; ctx.lineWidth = 3;
+    ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const name = r.char.name;
+    const nameY = r.y + r.h * 0.75;
+    // Split long names
+    const chars = [...name];
+    if (chars.length > 14) {
+      const half = Math.floor(chars.length / 2);
+      let split = half;
+      for (let k = half; k < chars.length; k++) {
+        if (chars[k] === '・' || chars[k] === ' ') { split = k + 1; break; }
+      }
+      ctx.strokeText(name.slice(0, split), previewX, nameY - 9);
+      ctx.fillText(name.slice(0, split), previewX, nameY - 9);
+      ctx.strokeText(name.slice(split), previewX, nameY + 9);
+      ctx.fillText(name.slice(split), previewX, nameY + 9);
+    } else {
+      ctx.strokeText(name, previewX, nameY);
+      ctx.fillText(name, previewX, nameY);
+    }
+
+    // Subtitle
+    ctx.fillStyle = r.char.themeColor; ctx.font = '13px sans-serif';
+    ctx.fillText(r.char.subtitle, previewX, r.y + r.h * 0.87);
+
+    // Speed stat bars
+    const statY = r.y + r.h * 0.93;
+    const barMaxW = r.w * 0.6;
+    const capRatio = (r.char.speedCap - 8) / 8; // 8..16 を 0..1 にマップ
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.fillRect(previewX - barMaxW/2, statY, barMaxW, 6);
+    ctx.fillStyle = r.char.themeColor;
+    ctx.fillRect(previewX - barMaxW/2, statY, barMaxW * capRatio, 6);
+  }
+
+  // Start button
+  const btnW = 200, btnH = 55;
+  const btnX = canvas.width/2 - btnW/2;
+  const btnY = canvas.height * 0.88;
+  const pulse = Math.sin(animTimer * 0.05) * 3;
+  ctx.fillStyle = '#4CAF50'; ctx.strokeStyle = '#2E7D32'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.roundRect(btnX - pulse, btnY - pulse, btnW + pulse*2, btnH + pulse*2, 15); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#FFF'; ctx.font = 'bold 22px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('このキャラで走る！', canvas.width/2, btnY + btnH/2);
+}
+
+function getStartButtonRect() {
+  const btnW = 200, btnH = 55;
+  return {
+    x: canvas.width/2 - btnW/2,
+    y: canvas.height * 0.88,
+    w: btnW,
+    h: btnH,
+  };
 }
 
 // --- Drawing: Game Over ---
@@ -691,13 +1173,15 @@ function drawCorrectEffect() {
 function startGame() {
   state = 'running';
   score = 0; level = 1; comboCount = 0;
-  scrollSpeed = SCROLL_SPEED_BASE;
+  scrollSpeed = computeSpeed();
   worldX = 0; bgOffset = 0; groundOffset = 0;
   charX = canvas.width * 0.2;
   charY = canvas.height * GROUND_RATIO;
   charVY = 0; isOnGround = true; isFalling = false;
+  onPlatform = false; currentPlatform = null;
   particles = []; correctEffectTimer = 0;
   turboBoost = false; turboEffectTimer = 0;
+  turboCount = 0; evolved = false; evolutionTimer = 0;
   setupNextBranch();
   playSound('start');
 }
@@ -711,6 +1195,15 @@ function setupNextBranch() {
   turboItemWorldX = worldX + canvas.width * 1.0;
   turboItemActive = true;
   turboItemCollected = false;
+
+  // 上ルートのプラットフォーム（当たり判定用）を world 座標で定義
+  const groundY = canvas.height * GROUND_RATIO;
+  currentPlatform = {
+    x1: branchWorldX - 50,
+    x2: branchWorldX - 50 + PLATFORM_LEN,
+    topY: groundY - PLATFORM_HEIGHT,
+  };
+  onPlatform = false;
 }
 
 function doJump() {
@@ -745,7 +1238,7 @@ function checkBranchJudgment() {
       comboCount++;
       if (score % 2 === 0) {
         level++;
-        scrollSpeed = SCROLL_SPEED_BASE + level * 0.3;
+        scrollSpeed = computeSpeed();
       }
       correctEffectTimer = 40;
       spawnParticles(charX, charY - CHAR_HEIGHT/2, '#FFD700', 15);
@@ -768,27 +1261,124 @@ function checkBranchJudgment() {
 }
 
 // --- Input ---
+function handlePointer(px, py) {
+  if (state === 'title') {
+    state = 'select';
+    return;
+  }
+  if (state === 'select') {
+    // キャラカードのヒット判定
+    const rects = getSelectCardRects();
+    for (const r of rects) {
+      if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) {
+        selectedCharacter = r.char.id;
+        return;
+      }
+    }
+    // スタートボタン
+    const btn = getStartButtonRect();
+    if (px >= btn.x && px <= btn.x + btn.w && py >= btn.y && py <= btn.y + btn.h) {
+      startGame();
+      return;
+    }
+    return;
+  }
+  if (state === 'gameover' && gameOverTimer > 60) {
+    state = 'select';
+    return;
+  }
+  // running / result 中はジャンプ
+  doJump();
+}
+
 document.addEventListener('keydown', (e) => {
   if (e.code === 'Space' || e.code === 'ArrowUp') {
     e.preventDefault();
-    if (state === 'title') startGame();
-    else if (state === 'gameover' && gameOverTimer > 60) startGame();
-    else doJump();
+    if (state === 'title') { state = 'select'; return; }
+    if (state === 'select') {
+      // スペース = 決定
+      startGame();
+      return;
+    }
+    if (state === 'gameover' && gameOverTimer > 60) { state = 'select'; return; }
+    doJump();
+  } else if (state === 'select' && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
+    e.preventDefault();
+    const idx = CHARACTERS.findIndex(c => c.id === selectedCharacter);
+    const next = e.code === 'ArrowRight'
+      ? (idx + 1) % CHARACTERS.length
+      : (idx - 1 + CHARACTERS.length) % CHARACTERS.length;
+    selectedCharacter = CHARACTERS[next].id;
   }
 });
 
-canvas.addEventListener('click', () => {
-  if (state === 'title') startGame();
-  else if (state === 'gameover' && gameOverTimer > 60) startGame();
-  else doJump();
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  handlePointer(x, y);
 });
 
 canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
-  if (state === 'title') startGame();
-  else if (state === 'gameover' && gameOverTimer > 60) startGame();
-  else doJump();
-});
+  if (e.touches.length > 0) {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.touches[0].clientX - rect.left;
+    const y = e.touches[0].clientY - rect.top;
+    handlePointer(x, y);
+  }
+}, { passive: false });
+
+// --- Physics helpers ---
+// プラットフォームとの衝突＋地面との衝突を行う物理ステップ
+function stepPhysics(groundY) {
+  if (!isOnGround) {
+    const prevY = charY;
+    charVY += GRAVITY;
+    charY += charVY;
+
+    // プラットフォーム着地判定（落下中のみ）
+    if (charVY > 0 && currentPlatform) {
+      const onX = worldX >= currentPlatform.x1 && worldX <= currentPlatform.x2;
+      const crossed = prevY <= currentPlatform.topY && charY >= currentPlatform.topY;
+      if (onX && crossed) {
+        charY = currentPlatform.topY;
+        charVY = 0;
+        isOnGround = true;
+        onPlatform = true;
+      }
+    }
+
+    // 地面との衝突（プラットフォーム未着地時のみ有効）
+    if (!isOnGround && charY >= groundY) {
+      charY = groundY;
+      charVY = 0;
+      isOnGround = true;
+      onPlatform = false;
+    }
+  } else if (onPlatform && currentPlatform) {
+    // プラットフォーム上: 端を越える or プラットフォーム切り替え時に落下開始
+    if (worldX < currentPlatform.x1 || worldX > currentPlatform.x2) {
+      isOnGround = false;
+      onPlatform = false;
+    } else {
+      // 位置を上面に固定
+      charY = currentPlatform.topY;
+    }
+  }
+}
+
+// 進化後、分岐直前で自動スローを判定し適用後のスピードを返す
+function getAppliedScrollSpeed() {
+  let s = scrollSpeed;
+  if (evolved && question && !judged) {
+    const dist = branchWorldX - worldX;
+    if (dist > 0 && dist < SLOW_TRIGGER_DIST) {
+      s *= 0.5;
+    }
+  }
+  return s;
+}
 
 // --- Main Loop ---
 function update() {
@@ -796,21 +1386,14 @@ function update() {
   const groundY = canvas.height * GROUND_RATIO;
 
   if (state === 'running') {
-    worldX += scrollSpeed;
-    bgOffset += scrollSpeed;
-    groundOffset += scrollSpeed;
+    const s = getAppliedScrollSpeed();
+    worldX += s;
+    bgOffset += s;
+    groundOffset += s;
     runFrame += 0.25;
 
     // Character physics - always active
-    if (!isOnGround) {
-      charVY += GRAVITY;
-      charY += charVY;
-      if (charY >= groundY) {
-        charY = groundY;
-        charVY = 0;
-        isOnGround = true;
-      }
-    }
+    stepPhysics(groundY);
 
     // Check turbo item collision (must be jumping - item is high up)
     if (turboItemActive && !turboItemCollected) {
@@ -823,13 +1406,24 @@ function update() {
         turboItemActive = false;
         // Permanent level boost +3
         level += 3;
-        scrollSpeed = SCROLL_SPEED_BASE + level * 0.3;
+        scrollSpeed = computeSpeed();
         turboEffectTimer = 60;
+        turboCount++;
         spawnParticles(charX, charY - CHAR_HEIGHT/2, '#FF00FF', 20);
         playSound('correct');
+
+        // 進化判定
+        if (!evolved && turboCount >= EVOLUTION_TURBO_COUNT) {
+          evolved = true;
+          evolutionTimer = 60;
+          spawnParticles(charX, charY - CHAR_HEIGHT/2, '#FFD700', 40);
+          spawnParticles(charX, charY - CHAR_HEIGHT/2, '#FFA500', 30);
+          playSound('correct');
+        }
       }
     }
     if (turboEffectTimer > 0) turboEffectTimer--;
+    if (evolutionTimer > 0) evolutionTimer--;
 
     // Check branch judgment
     checkBranchJudgment();
@@ -840,28 +1434,22 @@ function update() {
     resultTimer++;
 
     // Keep scrolling slowly
-    worldX += scrollSpeed * 0.5;
-    bgOffset += scrollSpeed * 0.5;
-    groundOffset += scrollSpeed * 0.5;
+    const s = scrollSpeed * 0.5;
+    worldX += s;
+    bgOffset += s;
+    groundOffset += s;
 
-    // Character physics
-    if (!isOnGround && !isFalling) {
-      charVY += GRAVITY;
-      charY += charVY;
-      if (charY >= groundY) {
-        charY = groundY;
-        charVY = 0;
-        isOnGround = true;
-      }
-    }
-
-    // Falling into pit animation
-    if (isFalling) {
+    // Character physics（プラットフォーム継続対応）
+    if (!isFalling) {
+      stepPhysics(groundY);
+    } else {
+      // Falling into pit animation (プラットフォーム判定なし)
       charVY += GRAVITY * 0.5;
       charY += charVY;
     }
 
     if (correctEffectTimer > 0) correctEffectTimer--;
+    if (evolutionTimer > 0) evolutionTimer--;
     if (shakeTimer > 0) shakeTimer--;
 
     // After delay, transition
@@ -894,6 +1482,8 @@ function draw() {
 
   if (state === 'title') {
     drawTitle();
+  } else if (state === 'select') {
+    drawSelect();
   } else {
     drawSky();
     drawMountains();
@@ -902,6 +1492,7 @@ function draw() {
     drawBranch();
     drawCharacter(charX, charY, CHAR_WIDTH, CHAR_HEIGHT, runFrame);
     drawQuestion();
+    drawSlowEffect();
     drawScore();
     drawTurboEffect();
     drawCorrectEffect();
