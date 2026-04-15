@@ -150,8 +150,8 @@ const CHARACTERS = [
   },
   {
     id: 'tralala',
-    name: 'トラララ・トラララ',
-    subtitle: '高速型・すぐに速くなる',
+    name: 'トララレオ・トラララ',
+    subtitle: '四足のサメ・高速型',
     baseSpeed: 7,
     growth: 0.35,
     speedCap: 14,
@@ -576,121 +576,149 @@ function drawBombar(x, y, w, h, frame) {
 }
 
 // --- Drawing: Tralala (トラララ・トラララ: サメ＋スニーカー) ---
+// --- Drawing: Tralareo Tralala (四足歩行のサメ + スニーカー) ---
 function drawTralala(x, y, w, h, frame) {
   const cx = x;
   const bottom = y;
-  const bodyW = w * 0.55;
-  const bodyH = h * 0.62;
-  const legLen = h * 0.28;
+  const bodyW = w * 1.05;    // 横長ボディ
+  const bodyH = h * 0.4;     // 魚雷型
+  const legLen = h * 0.26;
 
-  // Legs (スニーカー履き)
-  const legSwing = Math.sin(frame * 0.35) * 18; // 高速
-  ctx.strokeStyle = '#4a8dd8'; ctx.lineWidth = 6; ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.moveTo(cx - 9, bottom - legLen); ctx.lineTo(cx - 9 + legSwing, bottom - 6); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(cx + 9, bottom - legLen); ctx.lineTo(cx + 9 - legSwing, bottom - 6); ctx.stroke();
+  // ボディ中心（4本脚の上に横置き）
+  const bodyCY = bottom - legLen - bodyH * 0.45;
 
-  // Sneakers
-  const leftShoeX = cx - 9 + legSwing;
-  const rightShoeX = cx + 9 - legSwing;
-  for (const sx of [leftShoeX, rightShoeX]) {
+  // 4 本脚（前2本・後2本）— 対角線ペアで交互に動く
+  const swingA = Math.sin(frame * 0.35) * 14;
+  const swingB = Math.sin(frame * 0.35 + Math.PI) * 14;
+  const legSlots = [
+    { bx: cx - bodyW * 0.34, swing: swingA },  // 後ろ左
+    { bx: cx - bodyW * 0.12, swing: swingB },  // 後ろ右
+    { bx: cx + bodyW * 0.10, swing: swingA },  // 前 左
+    { bx: cx + bodyW * 0.30, swing: swingB },  // 前 右
+  ];
+  for (const leg of legSlots) {
+    const legTopX = leg.bx;
+    const legTopY = bodyCY + bodyH * 0.35;
+    const legBotX = legTopX + leg.swing;
+    const legBotY = bottom - 8;
+
+    // 脚（サメと同じ青）
+    ctx.strokeStyle = '#3a6fb8';
+    ctx.lineWidth = 6;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(legTopX, legTopY);
+    ctx.lineTo(legBotX, legBotY);
+    ctx.stroke();
+
+    // スニーカー
     ctx.fillStyle = '#fff';
     ctx.beginPath();
-    ctx.roundRect(sx - 13, bottom - 6, 22, 10, [10, 10, 4, 4]);
+    ctx.roundRect(legBotX - 12, legBotY, 22, 9, [10, 10, 3, 3]);
     ctx.fill();
-    ctx.strokeStyle = '#222'; ctx.lineWidth = 1.5; ctx.stroke();
-    // Sneaker stripe
+    ctx.strokeStyle = '#222'; ctx.lineWidth = 1.3; ctx.stroke();
+    // ストライプ
     ctx.fillStyle = '#ff3366';
-    ctx.fillRect(sx - 8, bottom - 3, 14, 3);
-    // Sole
+    ctx.fillRect(legBotX - 8, legBotY + 3, 14, 2.5);
+    // ソール
     ctx.fillStyle = '#222';
-    ctx.fillRect(sx - 13, bottom + 2, 22, 3);
+    ctx.fillRect(legBotX - 12, legBotY + 7, 22, 3);
   }
 
-  // Body (サメ身体 = 青グラデ)
-  const bodyTop = bottom - legLen - bodyH;
-  const bodyGrad = ctx.createLinearGradient(cx - bodyW/2, bodyTop, cx + bodyW/2, bodyTop + bodyH);
-  bodyGrad.addColorStop(0, '#3a6fb8'); bodyGrad.addColorStop(0.5, '#6aa3e0'); bodyGrad.addColorStop(1, '#2f5593');
-  ctx.fillStyle = bodyGrad;
-  ctx.beginPath();
-  ctx.roundRect(cx - bodyW/2, bodyTop, bodyW, bodyH, [bodyW/3, bodyW/3, 8, 8]);
-  ctx.fill();
-  ctx.strokeStyle = '#1e3a68'; ctx.lineWidth = 1.5; ctx.stroke();
-
-  // Belly
-  ctx.fillStyle = '#d8e6f5';
-  ctx.beginPath();
-  ctx.roundRect(cx - bodyW*0.3, bodyTop + bodyH*0.35, bodyW*0.6, bodyH*0.5, 8);
-  ctx.fill();
-
-  // Fin (背びれ)
+  // 尾びれ（左端）
   ctx.fillStyle = '#2f5593';
   ctx.beginPath();
-  ctx.moveTo(cx, bodyTop - 5);
-  ctx.lineTo(cx + 15, bodyTop + 15);
-  ctx.lineTo(cx - 10, bodyTop + 12);
-  ctx.closePath();
-  ctx.fill();
-
-  // Head (サメ頭 - 尖った)
-  const headW = bodyW * 1.05;
-  const headH = h * 0.32;
-  const headTop = bodyTop - headH + 8;
-  const headGrad = ctx.createLinearGradient(cx - headW/2, headTop, cx + headW/2, headTop + headH);
-  headGrad.addColorStop(0, '#3a6fb8'); headGrad.addColorStop(0.5, '#6aa3e0'); headGrad.addColorStop(1, '#2f5593');
-  ctx.fillStyle = headGrad;
-  // 丸い後頭部 + 尖った口先
-  ctx.beginPath();
-  ctx.moveTo(cx - headW/2 + 8, headTop);
-  ctx.quadraticCurveTo(cx - headW/2 - 4, headTop + headH/2, cx - headW/2 + 4, headTop + headH - 2);
-  ctx.lineTo(cx + headW/2 - 10, headTop + headH - 2);
-  ctx.quadraticCurveTo(cx + headW/2 + 12, headTop + headH * 0.55, cx + headW/2 - 2, headTop + 6);
+  ctx.moveTo(cx - bodyW * 0.45, bodyCY);
+  ctx.lineTo(cx - bodyW * 0.65, bodyCY - bodyH * 0.55);
+  ctx.lineTo(cx - bodyW * 0.52, bodyCY);
+  ctx.lineTo(cx - bodyW * 0.65, bodyCY + bodyH * 0.55);
   ctx.closePath();
   ctx.fill();
   ctx.strokeStyle = '#1e3a68'; ctx.lineWidth = 1.5; ctx.stroke();
 
-  // Gills (エラ)
+  // 本体（横長サメ）
+  const bodyGrad = ctx.createLinearGradient(cx, bodyCY - bodyH/2, cx, bodyCY + bodyH/2);
+  bodyGrad.addColorStop(0, '#2f5593');
+  bodyGrad.addColorStop(0.5, '#6aa3e0');
+  bodyGrad.addColorStop(0.6, '#d8e6f5');  // 腹側は白っぽく
+  bodyGrad.addColorStop(1, '#e8f0f8');
+  ctx.fillStyle = bodyGrad;
+
+  // 魚雷型（右に尖る）
+  ctx.beginPath();
+  const noseX = cx + bodyW * 0.5;
+  const noseY = bodyCY + bodyH * 0.05;
+  ctx.moveTo(cx - bodyW * 0.45, bodyCY - bodyH * 0.1);  // 尾側上
+  ctx.quadraticCurveTo(cx - bodyW * 0.1, bodyCY - bodyH * 0.55, cx + bodyW * 0.25, bodyCY - bodyH * 0.48);
+  ctx.quadraticCurveTo(cx + bodyW * 0.45, bodyCY - bodyH * 0.35, noseX, noseY);  // 鼻先
+  ctx.quadraticCurveTo(cx + bodyW * 0.45, bodyCY + bodyH * 0.4, cx + bodyW * 0.25, bodyCY + bodyH * 0.48);
+  ctx.quadraticCurveTo(cx - bodyW * 0.1, bodyCY + bodyH * 0.55, cx - bodyW * 0.45, bodyCY + bodyH * 0.3);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#1e3a68'; ctx.lineWidth = 1.8; ctx.stroke();
+
+  // 背びれ
+  ctx.fillStyle = '#2f5593';
+  ctx.beginPath();
+  ctx.moveTo(cx - bodyW * 0.1, bodyCY - bodyH * 0.5);
+  ctx.lineTo(cx + bodyW * 0.02, bodyCY - bodyH * 0.5 - 18);
+  ctx.lineTo(cx + bodyW * 0.15, bodyCY - bodyH * 0.5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#1e3a68'; ctx.lineWidth = 1.5; ctx.stroke();
+
+  // エラ
   ctx.strokeStyle = '#1e3a68'; ctx.lineWidth = 1.2;
   for (let i = 0; i < 3; i++) {
+    const gx = cx + bodyW * 0.1 + i * 4;
     ctx.beginPath();
-    ctx.moveTo(cx - headW/2 + 10, headTop + headH * 0.45 + i * 4);
-    ctx.lineTo(cx - headW/2 + 16, headTop + headH * 0.6 + i * 4);
+    ctx.moveTo(gx, bodyCY - bodyH * 0.15);
+    ctx.quadraticCurveTo(gx - 2, bodyCY, gx, bodyCY + bodyH * 0.15);
     ctx.stroke();
   }
 
-  // Mouth (ギザ歯)
+  // 口 & ギザ歯（右側）
+  const mouthStartX = cx + bodyW * 0.28;
+  const mouthY = bodyCY + bodyH * 0.1;
   ctx.fillStyle = '#fff';
   ctx.beginPath();
-  ctx.moveTo(cx + headW * 0.05, headTop + headH * 0.75);
-  for (let i = 0; i < 6; i++) {
-    const tx = cx + headW * 0.05 + i * 5;
-    ctx.lineTo(tx + 2.5, headTop + headH * 0.85);
-    ctx.lineTo(tx + 5, headTop + headH * 0.75);
+  ctx.moveTo(mouthStartX, mouthY);
+  const toothCount = 5;
+  for (let i = 0; i < toothCount; i++) {
+    const tx = mouthStartX + i * 4.5;
+    ctx.lineTo(tx + 2.25, mouthY + 7);
+    ctx.lineTo(tx + 4.5, mouthY);
   }
+  ctx.lineTo(mouthStartX + toothCount * 4.5, mouthY - 1);
+  ctx.lineTo(mouthStartX, mouthY - 1);
   ctx.closePath();
   ctx.fill();
   ctx.strokeStyle = '#1e3a68'; ctx.lineWidth = 1; ctx.stroke();
 
-  // Eyes
-  const eyeY = headTop + headH * 0.35;
-  const eyeSpacing = headW * 0.2;
+  // 目（前方右寄りに1つ）
+  const eyeX = cx + bodyW * 0.3;
+  const eyeY = bodyCY - bodyH * 0.2;
   ctx.fillStyle = '#fff';
-  ctx.beginPath(); ctx.ellipse(cx - eyeSpacing, eyeY, 9, 10, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.ellipse(cx + eyeSpacing, eyeY, 9, 10, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(eyeX, eyeY, 9, 10, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#1e3a68'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.ellipse(eyeX, eyeY, 9, 10, 0, 0, Math.PI * 2); ctx.stroke();
   ctx.fillStyle = '#111';
-  ctx.beginPath(); ctx.ellipse(cx - eyeSpacing + 1, eyeY + 1, 5, 6, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.ellipse(cx + eyeSpacing + 1, eyeY + 1, 5, 6, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(eyeX + 1, eyeY + 1, 5, 6, 0, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#fff';
-  ctx.beginPath(); ctx.arc(cx - eyeSpacing + 3, eyeY - 2, 1.5, 0, Math.PI * 2); ctx.fill();
-  ctx.beginPath(); ctx.arc(cx + eyeSpacing + 3, eyeY - 2, 1.5, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(eyeX + 2.5, eyeY - 2, 1.8, 0, Math.PI * 2); ctx.fill();
 
-  // Speed lines (高速感)
+  // 鼻孔（小さな穴）
+  ctx.fillStyle = '#1e3a68';
+  ctx.beginPath(); ctx.arc(cx + bodyW * 0.42, bodyCY - bodyH * 0.05, 1.2, 0, Math.PI * 2); ctx.fill();
+
+  // スピードライン（高速感：尾側から流れる）
   ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2;
   const lineOffset = (frame * 4) % 16;
   for (let i = 0; i < 3; i++) {
-    const ly = bodyTop + bodyH * 0.3 + i * 12;
+    const ly = bodyCY - bodyH * 0.2 + i * 10;
     ctx.beginPath();
-    ctx.moveTo(cx - bodyW/2 - 15 - lineOffset, ly);
-    ctx.lineTo(cx - bodyW/2 - 4 - lineOffset, ly);
+    ctx.moveTo(cx - bodyW * 0.75 - lineOffset, ly);
+    ctx.lineTo(cx - bodyW * 0.55 - lineOffset, ly);
     ctx.stroke();
   }
 }
