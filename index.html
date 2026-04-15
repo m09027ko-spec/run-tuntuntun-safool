@@ -1203,7 +1203,12 @@ function setupNextBranch() {
     x2: branchWorldX - 50 + PLATFORM_LEN,
     topY: groundY - PLATFORM_HEIGHT,
   };
-  onPlatform = false;
+  // 前の分岐で上ルートに乗っていた場合は、新しいプラットフォームは遥か先なので即落下開始
+  if (onPlatform) {
+    isOnGround = false;
+    charVY = 0;
+    onPlatform = false;
+  }
 }
 
 function doJump() {
