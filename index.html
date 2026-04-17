@@ -68,7 +68,7 @@ const EVOLUTION_TURBO_COUNT = 5; // 進化に必要なターボ取得数
 const SLOW_TRIGGER_DIST = 400;   // 進化後スローを発動する分岐までの距離
 
 // --- Game State ---
-let state = 'title'; // title, select, running, result, gameover
+let state = 'title'; // title, select, running, result, gameover, ranking
 let score = 0;
 let level = 1;
 let scrollSpeed = SCROLL_SPEED_BASE;
@@ -118,6 +118,38 @@ let resultCorrect = false;  // was the judgment correct?
 // Character selection
 let selectedCharacter = 'safool'; // デフォルト
 let selectHoverIndex = 0;         // キャラ選択画面のフォーカス
+
+// --- Ranking System (localStorage) ---
+const RANKING_KEY = 'tuntuntun_ranking';
+const RANKING_MAX = 5;
+
+function loadRanking() {
+  try {
+    const raw = localStorage.getItem(RANKING_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) { /* ignore */ }
+  return [];
+}
+
+function saveToRanking(lv, sc, charId) {
+  const ranking = loadRanking();
+  const charObj = CHARACTERS.find(c => c.id === charId);
+  ranking.push({
+    level: lv,
+    score: sc,
+    character: charId,
+    name: charObj ? charObj.name : charId,
+    date: new Date().toLocaleDateString('ja-JP'),
+  });
+  // レベル降順 → スコア降順でソートし上位5件だけ保持
+  ranking.sort((a, b) => b.level - a.level || b.score - a.score);
+  ranking.splice(RANKING_MAX);
+  localStorage.setItem(RANKING_KEY, JSON.stringify(ranking));
+  return ranking;
+}
+
+let lastRanking = [];   // ゲームオーバー時に保存した結果を保持
+let lastRankIndex = -1; // 今回のランクインindex（-1 = ランク外）
 
 // --- Character Image ---
 let charImage = null;
@@ -1037,13 +1069,105 @@ function drawTitle() {
   ctx.fillText('ジャンプ = タップ / スペース / ↑', canvas.width/2, canvas.height * 0.73);
   ctx.fillText('まっすぐ = 何もしない', canvas.width/2, canvas.height * 0.77);
 
-  const btnW = 200, btnH = 55;
-  const btnX = canvas.width/2 - btnW/2, btnY = canvas.height * 0.83;
+  // キャラ選択ボタン
+  const btnW = 200, btnH = 50;
+  const btnX = canvas.width/2 - btnW/2, btnY = canvas.height * 0.80;
   const pulse = Math.sin(animTimer * 0.05) * 3;
   ctx.fillStyle = '#FF6347'; ctx.strokeStyle = '#B22222'; ctx.lineWidth = 3;
   ctx.beginPath(); ctx.roundRect(btnX - pulse, btnY - pulse, btnW + pulse*2, btnH + pulse*2, 15); ctx.fill(); ctx.stroke();
   ctx.fillStyle = '#FFF'; ctx.font = 'bold 24px sans-serif';
   ctx.fillText('キャラ選択へ', canvas.width/2, btnY + btnH/2);
+
+  // ランキングボタン
+  const rkBtnW = 160, rkBtnH = 42;
+  const rkBtnX = canvas.width/2 - rkBtnW/2, rkBtnY = canvas.height * 0.92;
+  ctx.fillStyle = '#4a6fa5'; ctx.strokeStyle = '#2c4a7c'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect(rkBtnX, rkBtnY, rkBtnW, rkBtnH, 12); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#FFF'; ctx.font = 'bold 18px sans-serif';
+  ctx.fillText('🏆 ランキング', canvas.width/2, rkBtnY + rkBtnH/2);
+}
+
+function getTitleRankingBtnRect() {
+  const rkBtnW = 160, rkBtnH = 42;
+  return { x: canvas.width/2 - rkBtnW/2, y: canvas.height * 0.92, w: rkBtnW, h: rkBtnH };
+}
+
+// --- Drawing: Ranking Screen ---
+function drawRanking() {
+  drawSky(); drawMountains(); drawGround();
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const cx = canvas.width / 2;
+  let y = canvas.height * 0.12;
+
+  ctx.fillStyle = '#FFD700'; ctx.strokeStyle = '#B8860B'; ctx.lineWidth = 3;
+  ctx.font = 'bold 36px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.strokeText('🏆 ランキング TOP 5', cx, y);
+  ctx.fillText('🏆 ランキング TOP 5', cx, y);
+
+  y += 50;
+  const ranking = loadRanking();
+  const rowH = 44;
+  const tableW = Math.min(canvas.width * 0.85, 440);
+  const tableX = cx - tableW / 2;
+
+  for (let i = 0; i < RANKING_MAX; i++) {
+    const ry = y + i * rowH;
+    const entry = ranking[i];
+
+    // 行の背景
+    ctx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.05)';
+    ctx.beginPath();
+    ctx.roundRect(tableX, ry, tableW, rowH - 4, 8);
+    ctx.fill();
+
+    if (!entry) {
+      ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.font = '18px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${i + 1}.  ---`, cx, ry + rowH / 2);
+      continue;
+    }
+
+    // 順位
+    const medals = ['🥇', '🥈', '🥉'];
+    ctx.font = '20px sans-serif'; ctx.textAlign = 'left';
+    ctx.fillStyle = '#FFF';
+    ctx.fillText(i < 3 ? medals[i] : `${i + 1}.`, tableX + 10, ry + rowH / 2);
+
+    // キャラ名
+    ctx.font = 'bold 16px sans-serif'; ctx.fillStyle = '#FFF';
+    const shortName = entry.name.length > 10 ? entry.name.slice(0, 10) + '…' : entry.name;
+    ctx.fillText(shortName, tableX + 50, ry + rowH / 2 - 7);
+
+    // 日付
+    ctx.font = '11px sans-serif'; ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.fillText(entry.date || '', tableX + 50, ry + rowH / 2 + 11);
+
+    // レベル & スコア
+    ctx.textAlign = 'right'; ctx.font = 'bold 18px sans-serif';
+    ctx.fillStyle = '#90EE90';
+    ctx.fillText(`Lv.${entry.level}`, tableX + tableW - 90, ry + rowH / 2);
+    ctx.fillStyle = '#FFD700';
+    ctx.fillText(`${entry.score}pt`, tableX + tableW - 12, ry + rowH / 2);
+    ctx.textAlign = 'center';
+  }
+
+  // 戻るボタン
+  const btnW = 160, btnH = 46;
+  const btnX = cx - btnW / 2;
+  const btnY = y + RANKING_MAX * rowH + 30;
+  ctx.fillStyle = '#FF6347'; ctx.strokeStyle = '#B22222'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.roundRect(btnX, btnY, btnW, btnH, 12); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#FFF'; ctx.font = 'bold 20px sans-serif';
+  ctx.fillText('もどる', cx, btnY + btnH / 2);
+}
+
+function getRankingBackBtnRect() {
+  const cx = canvas.width / 2;
+  const btnW = 160, btnH = 46;
+  const y = canvas.height * 0.12 + 50 + RANKING_MAX * 44 + 30;
+  return { x: cx - btnW / 2, y, w: btnW, h: btnH };
 }
 
 // --- Drawing: Character Select ---
@@ -1154,33 +1278,108 @@ function getStartButtonRect() {
 
 // --- Drawing: Game Over ---
 function drawGameOver() {
-  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  const centerY = canvas.height * 0.35;
 
+  const cx = canvas.width / 2;
+  let y = canvas.height * 0.08;
+
+  // タイトル
   ctx.fillStyle = '#FF4444'; ctx.strokeStyle = '#880000'; ctx.lineWidth = 3;
-  ctx.font = 'bold 48px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.strokeText('ゲームオーバー', canvas.width/2, centerY);
-  ctx.fillText('ゲームオーバー', canvas.width/2, centerY);
+  ctx.font = 'bold 40px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.strokeText('ゲームオーバー', cx, y);
+  ctx.fillText('ゲームオーバー', cx, y);
 
-  ctx.fillStyle = '#FFD700'; ctx.font = 'bold 28px sans-serif';
-  ctx.fillText(`スコア: ${score}`, canvas.width/2, centerY + 60);
-  ctx.fillStyle = '#90EE90'; ctx.font = '22px sans-serif';
-  ctx.fillText(`レベル: ${level}`, canvas.width/2, centerY + 100);
+  // 今回のスコア
+  y += 45;
+  ctx.fillStyle = '#FFD700'; ctx.font = 'bold 24px sans-serif';
+  ctx.fillText(`スコア: ${score}`, cx, y);
+  y += 32;
+  ctx.fillStyle = '#90EE90'; ctx.font = '20px sans-serif';
+  ctx.fillText(`レベル: ${level}`, cx, y);
 
   if (question) {
-    ctx.fillStyle = '#FFF'; ctx.font = '20px sans-serif';
-    ctx.fillText(`正解は ${question.answer} でした`, canvas.width/2, centerY + 145);
+    y += 28;
+    ctx.fillStyle = '#FFF'; ctx.font = '17px sans-serif';
+    ctx.fillText(`正解は ${question.answer} でした`, cx, y);
   }
 
+  // ランキング表示
+  y += 40;
+  ctx.fillStyle = '#FFD700'; ctx.font = 'bold 22px sans-serif';
+  ctx.fillText('🏆 ランキング TOP 5', cx, y);
+
+  y += 10;
+  const ranking = lastRanking;
+  const rowH = 32;
+  const tableW = Math.min(canvas.width * 0.85, 420);
+  const tableX = cx - tableW / 2;
+
+  for (let i = 0; i < RANKING_MAX; i++) {
+    const ry = y + i * rowH;
+    const entry = ranking[i];
+    const isMe = i === lastRankIndex;
+
+    // 行の背景
+    if (isMe) {
+      const glow = 0.3 + Math.sin(animTimer * 0.1) * 0.15;
+      ctx.fillStyle = `rgba(255, 215, 0, ${glow})`;
+    } else {
+      ctx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)';
+    }
+    ctx.beginPath();
+    ctx.roundRect(tableX, ry, tableW, rowH - 2, 6);
+    ctx.fill();
+
+    if (!entry) {
+      // 空エントリ
+      ctx.fillStyle = 'rgba(255,255,255,0.25)'; ctx.font = '16px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${i + 1}.  ---`, cx, ry + rowH / 2);
+      continue;
+    }
+
+    // 順位メダル
+    const medals = ['🥇', '🥈', '🥉'];
+    ctx.font = '16px sans-serif'; ctx.textAlign = 'left';
+    const rankLabel = i < 3 ? medals[i] : `${i + 1}.`;
+    ctx.fillStyle = isMe ? '#FFD700' : '#FFF';
+    ctx.fillText(rankLabel, tableX + 8, ry + rowH / 2);
+
+    // キャラ名（短縮）
+    ctx.font = isMe ? 'bold 14px sans-serif' : '14px sans-serif';
+    ctx.fillStyle = isMe ? '#FFD700' : '#DDD';
+    const shortName = entry.name.length > 10 ? entry.name.slice(0, 10) + '…' : entry.name;
+    ctx.fillText(shortName, tableX + 40, ry + rowH / 2);
+
+    // レベル & スコア
+    ctx.textAlign = 'right';
+    ctx.font = isMe ? 'bold 15px sans-serif' : '15px sans-serif';
+    ctx.fillStyle = '#90EE90';
+    ctx.fillText(`Lv.${entry.level}`, tableX + tableW - 80, ry + rowH / 2);
+    ctx.fillStyle = '#FFD700';
+    ctx.fillText(`${entry.score}pt`, tableX + tableW - 10, ry + rowH / 2);
+    ctx.textAlign = 'center';
+  }
+
+  // ランクイン演出
+  if (lastRankIndex >= 0 && lastRankIndex < RANKING_MAX) {
+    const flashAlpha = 0.5 + Math.sin(animTimer * 0.15) * 0.5;
+    ctx.fillStyle = `rgba(255, 215, 0, ${flashAlpha * 0.8})`;
+    ctx.font = 'bold 18px sans-serif';
+    ctx.fillText(`✨ ${lastRankIndex + 1}位にランクイン！ ✨`, cx, y + RANKING_MAX * rowH + 12);
+  }
+
+  // もう一回ボタン
   if (gameOverTimer > 60) {
-    const btnW = 200, btnH = 55;
-    const btnX = canvas.width/2 - btnW/2, btnY = centerY + 185;
+    const btnW = 200, btnH = 50;
+    const btnX = cx - btnW / 2;
+    const btnY = y + RANKING_MAX * rowH + 38;
     const pulse = Math.sin(animTimer * 0.05) * 3;
     ctx.fillStyle = '#4CAF50'; ctx.strokeStyle = '#2E7D32'; ctx.lineWidth = 3;
     ctx.beginPath(); ctx.roundRect(btnX - pulse, btnY - pulse, btnW + pulse*2, btnH + pulse*2, 15); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = '#FFF'; ctx.font = 'bold 24px sans-serif';
-    ctx.fillText('もう一回！', canvas.width/2, btnY + btnH/2);
+    ctx.fillStyle = '#FFF'; ctx.font = 'bold 22px sans-serif';
+    ctx.fillText('もう一回！', cx, btnY + btnH / 2);
   }
 }
 
@@ -1295,7 +1494,20 @@ function checkBranchJudgment() {
 
 // --- Input ---
 function handlePointer(px, py) {
+  if (state === 'ranking') {
+    const backBtn = getRankingBackBtnRect();
+    if (px >= backBtn.x && px <= backBtn.x + backBtn.w && py >= backBtn.y && py <= backBtn.y + backBtn.h) {
+      state = 'title';
+    }
+    return;
+  }
   if (state === 'title') {
+    // ランキングボタン判定
+    const rkBtn = getTitleRankingBtnRect();
+    if (px >= rkBtn.x && px <= rkBtn.x + rkBtn.w && py >= rkBtn.y && py <= rkBtn.y + rkBtn.h) {
+      state = 'ranking';
+      return;
+    }
     state = 'select';
     return;
   }
@@ -1327,6 +1539,7 @@ function handlePointer(px, py) {
 document.addEventListener('keydown', (e) => {
   if (e.code === 'Space' || e.code === 'ArrowUp') {
     e.preventDefault();
+    if (state === 'ranking') { state = 'title'; return; }
     if (state === 'title') { state = 'select'; return; }
     if (state === 'select') {
       // スペース = 決定
@@ -1493,6 +1706,10 @@ function update() {
     } else if (!resultCorrect && resultTimer > 70) {
       state = 'gameover';
       gameOverTimer = 0;
+      // ランキングに保存
+      lastRanking = saveToRanking(level, score, selectedCharacter);
+      // 今回のスコアがランキングの何位か判定
+      lastRankIndex = lastRanking.findIndex(r => r.level === level && r.score === score);
     }
   }
 
@@ -1515,6 +1732,8 @@ function draw() {
 
   if (state === 'title') {
     drawTitle();
+  } else if (state === 'ranking') {
+    drawRanking();
   } else if (state === 'select') {
     drawSelect();
   } else {
