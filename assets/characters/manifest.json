@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "characters": [
+    {
+      "id": "img_safool",
+      "name": "写真のサフール",
+      "subtitle": "画像キャラ・バランス型",
+      "image": "safool-sample.jpeg",
+      "baseSpeed": 6,
+      "growth": 0.3,
+      "speedCap": 13,
+      "themeColor": "#deb060"
+    },
+    {
+      "id": "img_bombar",
+      "name": "写真のボンバル",
+      "subtitle": "画像キャラ・重量級",
+      "image": "bombar-sample.jpeg",
+      "baseSpeed": 5,
+      "growth": 0.25,
+      "speedCap": 11,
+      "themeColor": "#3e7d4f"
+    },
+    {
+      "id": "img_tralala",
+      "name": "写真のトララレオ",
+      "subtitle": "画像キャラ・高速型",
+      "image": "tralala-sample.png",
+      "baseSpeed": 7,
+      "growth": 0.35,
+      "speedCap": 14,
+      "themeColor": "#4a90d9"
+    }
+  ]
+}

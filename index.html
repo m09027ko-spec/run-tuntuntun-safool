@@ -760,6 +760,214 @@ CHARACTERS[0].draw = drawSafool;
 CHARACTERS[1].draw = drawBombar;
 CHARACTERS[2].draw = drawTralala;
 
+// --- Image-based character support -----------------------------------------
+// 画像キャラ用: { id, name, subtitle, image(url or dataURL), baseSpeed, growth, speedCap, themeColor, imageObj, loaded }
+// drawImageCharacter(x, y, w, h, frame, ch): 画像を走らせるように描画
+function drawImageCharacter(x, y, w, h, frame, ch) {
+  // 影
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.ellipse(x, y + 2, w * 0.35, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 画像が未ロード → プレースホルダー (?マーク付き灰色カプセル)
+  if (!ch.imageObj || !ch.loaded) {
+    ctx.fillStyle = '#888';
+    ctx.beginPath();
+    ctx.roundRect(x - w/2, y - h, w, h, 12);
+    ctx.fill();
+    ctx.fillStyle = '#FFF';
+    ctx.font = `bold ${h * 0.5}px sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('?', x, y - h / 2);
+    return;
+  }
+
+  // 走るアニメ：上下のバウンド + 微小な傾き
+  const bob = Math.abs(Math.sin(frame * 0.25)) * 4;
+  const tilt = Math.sin(frame * 0.25) * 0.08; // 約 ±4.6度
+
+  const img = ch.imageObj;
+  // アスペクト比を維持しつつ w×h に収める
+  const iw = img.naturalWidth || img.width || 1;
+  const ih = img.naturalHeight || img.height || 1;
+  const scale = Math.min(w / iw, h / ih);
+  const dw = iw * scale;
+  const dh = ih * scale;
+
+  ctx.save();
+  ctx.translate(x, y - h/2 - bob);
+  ctx.rotate(tilt);
+  ctx.drawImage(img, -dw/2, -dh/2, dw, dh);
+  ctx.restore();
+}
+
+// 画像キャラ用 draw factory
+function makeImageDrawFn(ch) {
+  return (x, y, w, h, frame) => drawImageCharacter(x, y, w, h, frame, ch);
+}
+
+// 画像読み込みユーティリティ
+function loadCharacterImage(ch) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => { ch.imageObj = img; ch.loaded = true; resolve(true); };
+    img.onerror = () => { ch.loaded = false; resolve(false); };
+    img.src = ch.image;
+  });
+}
+
+// manifest.json 経由で読み込まれた画像キャラを CHARACTERS に追加
+async function loadManifestCharacters() {
+  try {
+    const res = await fetch('assets/characters/manifest.json', { cache: 'no-cache' });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!Array.isArray(data.characters)) return;
+    for (const entry of data.characters) {
+      if (!entry.id || !entry.image) continue;
+      if (CHARACTERS.find(c => c.id === entry.id)) continue; // 重複防止
+      const ch = {
+        id: entry.id,
+        name: entry.name || entry.id,
+        subtitle: entry.subtitle || '画像キャラ',
+        baseSpeed: entry.baseSpeed ?? 6,
+        growth: entry.growth ?? 0.3,
+        speedCap: entry.speedCap ?? 13,
+        themeColor: entry.themeColor || '#888',
+        image: `assets/characters/${entry.image}`,
+        imageObj: null,
+        loaded: false,
+        source: 'manifest',
+      };
+      ch.draw = makeImageDrawFn(ch);
+      CHARACTERS.push(ch);
+      loadCharacterImage(ch); // 非同期ロード
+    }
+  } catch (e) {
+    console.warn('manifest load failed:', e);
+  }
+}
+
+// --- ローカルにアップロードされたカスタムキャラ (localStorage 保存) ---
+const CUSTOM_CHAR_KEY = 'tuntuntun_custom_chars';
+
+function loadCustomCharsFromStorage() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_CHAR_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) { return []; }
+}
+
+function saveCustomCharsToStorage(arr) {
+  try {
+    localStorage.setItem(CUSTOM_CHAR_KEY, JSON.stringify(arr));
+  } catch (e) { console.warn('save custom char failed (quota?)', e); }
+}
+
+function registerCustomChar(entry) {
+  // entry: { id, name, subtitle, imageDataURL, baseSpeed, growth, speedCap, themeColor }
+  if (CHARACTERS.find(c => c.id === entry.id)) return;
+  const ch = {
+    id: entry.id,
+    name: entry.name || 'マイキャラ',
+    subtitle: entry.subtitle || 'オリジナル',
+    baseSpeed: entry.baseSpeed ?? 6,
+    growth: entry.growth ?? 0.3,
+    speedCap: entry.speedCap ?? 13,
+    themeColor: entry.themeColor || '#ff88cc',
+    image: entry.imageDataURL,
+    imageObj: null,
+    loaded: false,
+    source: 'custom',
+    custom: true,
+  };
+  ch.draw = makeImageDrawFn(ch);
+  CHARACTERS.push(ch);
+  loadCharacterImage(ch);
+}
+
+function loadCustomCharacters() {
+  const entries = loadCustomCharsFromStorage();
+  for (const e of entries) registerCustomChar(e);
+}
+
+function addCustomCharacterFromFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.type.startsWith('image/')) { reject('not an image'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      // 画像を 256×256 にリサイズして localStorage 容量節約
+      const tempImg = new Image();
+      tempImg.onload = () => {
+        const canvasTmp = document.createElement('canvas');
+        const MAX = 256;
+        const scale = Math.min(MAX / tempImg.width, MAX / tempImg.height, 1);
+        canvasTmp.width = Math.max(1, Math.round(tempImg.width * scale));
+        canvasTmp.height = Math.max(1, Math.round(tempImg.height * scale));
+        const ctx2 = canvasTmp.getContext('2d');
+        ctx2.drawImage(tempImg, 0, 0, canvasTmp.width, canvasTmp.height);
+        const dataURL = canvasTmp.toDataURL('image/png');
+        const id = 'custom_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+        const baseName = file.name.replace(/\.[^.]+$/, '');
+        const entry = {
+          id,
+          name: baseName.slice(0, 12) || 'マイキャラ',
+          subtitle: 'オリジナル',
+          imageDataURL: dataURL,
+          baseSpeed: 6, growth: 0.3, speedCap: 13,
+          themeColor: '#ff88cc',
+        };
+        const stored = loadCustomCharsFromStorage();
+        stored.push(entry);
+        saveCustomCharsToStorage(stored);
+        registerCustomChar(entry);
+        selectedCharacter = id; // 追加したら自動選択
+        resolve(entry);
+      };
+      tempImg.onerror = () => reject('image decode error');
+      tempImg.src = reader.result;
+    };
+    reader.onerror = () => reject('file read error');
+    reader.readAsDataURL(file);
+  });
+}
+
+function removeCustomCharacter(id) {
+  const entries = loadCustomCharsFromStorage().filter(e => e.id !== id);
+  saveCustomCharsToStorage(entries);
+  const idx = CHARACTERS.findIndex(c => c.id === id);
+  if (idx >= 0) CHARACTERS.splice(idx, 1);
+  if (selectedCharacter === id) selectedCharacter = 'safool';
+}
+
+// 非表示の file input（アップロード用）
+const _uploadInput = document.createElement('input');
+_uploadInput.type = 'file';
+_uploadInput.accept = 'image/*';
+_uploadInput.style.display = 'none';
+document.body.appendChild(_uploadInput);
+_uploadInput.addEventListener('change', async (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  try {
+    await addCustomCharacterFromFile(file);
+  } catch (err) {
+    alert('画像の追加に失敗しました: ' + err);
+  }
+  _uploadInput.value = '';
+});
+
+function triggerCharacterUpload() {
+  _uploadInput.click();
+}
+
+// 起動時に読み込み
+loadCustomCharacters();
+loadManifestCharacters();
+
 // --- Drawing: Background ---
 function drawSky() {
   const grad = ctx.createLinearGradient(0, 0, 0, canvas.height * GROUND_RATIO);
@@ -1173,19 +1381,31 @@ function getRankingBackBtnRect() {
 // --- Drawing: Character Select ---
 function getSelectCardRects() {
   const n = CHARACTERS.length;
-  const cardW = Math.min(canvas.width / (n + 1), 220);
-  const cardH = cardW * 1.4;
-  const gap = 20;
-  const totalW = cardW * n + gap * (n - 1);
-  const startX = (canvas.width - totalW) / 2;
-  const y = canvas.height * 0.32;
-  return CHARACTERS.map((c, i) => ({
-    x: startX + i * (cardW + gap),
-    y,
-    w: cardW,
-    h: cardH,
-    char: c,
-  }));
+  const gap = 14;
+  // 1 行あたりの最大カード数（画面幅に応じて）
+  const perRow = Math.max(3, Math.min(4, Math.floor((canvas.width - gap) / (160 + gap))));
+  const rows = Math.ceil(n / perRow);
+  const cardW = Math.min((canvas.width - gap * (perRow + 1)) / perRow, 200);
+  const cardH = cardW * 1.35;
+  const topY = canvas.height * 0.22;
+  // 利用可能な縦スペースに収める
+  const maxGridH = canvas.height * 0.60;
+  const rowGap = Math.min(14, Math.max(6, (maxGridH - cardH * rows) / Math.max(1, rows - 1)));
+  return CHARACTERS.map((c, i) => {
+    const row = Math.floor(i / perRow);
+    const col = i % perRow;
+    // 最終行のカード数が少ない場合は中央寄せ
+    const itemsInThisRow = (row === rows - 1) ? (n - row * perRow) : perRow;
+    const rowTotalW = cardW * itemsInThisRow + gap * (itemsInThisRow - 1);
+    const rowStartX = (canvas.width - rowTotalW) / 2;
+    return {
+      x: rowStartX + col * (cardW + gap),
+      y: topY + row * (cardH + rowGap),
+      w: cardW,
+      h: cardH,
+      char: c,
+    };
+  });
 }
 
 function drawSelect() {
@@ -1252,6 +1472,30 @@ function drawSelect() {
     ctx.fillRect(previewX - barMaxW/2, statY, barMaxW, 6);
     ctx.fillStyle = r.char.themeColor;
     ctx.fillRect(previewX - barMaxW/2, statY, barMaxW * capRatio, 6);
+
+    // カスタムキャラには削除ボタン (×)
+    if (r.char.custom) {
+      const del = getCustomCharDeleteRect(r);
+      ctx.fillStyle = 'rgba(220,60,60,0.9)';
+      ctx.beginPath(); ctx.arc(del.x + del.w/2, del.y + del.h/2, del.w/2, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      const cxd = del.x + del.w/2, cyd = del.y + del.h/2, s = del.w * 0.25;
+      ctx.moveTo(cxd - s, cyd - s); ctx.lineTo(cxd + s, cyd + s);
+      ctx.moveTo(cxd + s, cyd - s); ctx.lineTo(cxd - s, cyd + s);
+      ctx.stroke();
+    }
+
+    // ソースバッジ（manifest キャラ）
+    if (r.char.source === 'manifest') {
+      ctx.fillStyle = 'rgba(74, 144, 217, 0.85)';
+      ctx.beginPath();
+      ctx.roundRect(r.x + 6, r.y + 6, 42, 18, 6);
+      ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 10px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('IMG', r.x + 27, r.y + 15);
+    }
   }
 
   // Start button
@@ -1264,6 +1508,14 @@ function drawSelect() {
   ctx.fillStyle = '#FFF'; ctx.font = 'bold 22px sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('このキャラで走る！', canvas.width/2, btnY + btnH/2);
+
+  // Upload button (右下)
+  const upRect = getUploadBtnRect();
+  ctx.fillStyle = 'rgba(255, 136, 204, 0.9)'; ctx.strokeStyle = '#b8438f'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect(upRect.x, upRect.y, upRect.w, upRect.h, 10); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#FFF'; ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('＋ 画像でキャラ追加', upRect.x + upRect.w/2, upRect.y + upRect.h/2);
 }
 
 function getStartButtonRect() {
@@ -1273,6 +1525,26 @@ function getStartButtonRect() {
     y: canvas.height * 0.88,
     w: btnW,
     h: btnH,
+  };
+}
+
+function getUploadBtnRect() {
+  const w = 160, h = 36;
+  return {
+    x: canvas.width - w - 14,
+    y: canvas.height - h - 14,
+    w, h,
+  };
+}
+
+// カスタムキャラの×ボタン矩形（rects: getSelectCardRects() の結果を受け取る）
+function getCustomCharDeleteRect(r) {
+  const size = 22;
+  return {
+    x: r.x + r.w - size - 6,
+    y: r.y + 6,
+    w: size,
+    h: size,
   };
 }
 
@@ -1512,9 +1784,25 @@ function handlePointer(px, py) {
     return;
   }
   if (state === 'select') {
+    // アップロードボタン
+    const up = getUploadBtnRect();
+    if (px >= up.x && px <= up.x + up.w && py >= up.y && py <= up.y + up.h) {
+      triggerCharacterUpload();
+      return;
+    }
     // キャラカードのヒット判定
     const rects = getSelectCardRects();
     for (const r of rects) {
+      // カスタムキャラの削除ボタン判定（カードクリックより優先）
+      if (r.char.custom) {
+        const del = getCustomCharDeleteRect(r);
+        if (px >= del.x && px <= del.x + del.w && py >= del.y && py <= del.y + del.h) {
+          if (confirm(`「${r.char.name}」を削除しますか？`)) {
+            removeCustomCharacter(r.char.id);
+          }
+          return;
+        }
+      }
       if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) {
         selectedCharacter = r.char.id;
         return;
