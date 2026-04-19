@@ -23,13 +23,14 @@
     },
     {
       "id": "img_tralala",
-      "name": "写真のトララレオ",
+      "name": "ポッチャマ",
       "subtitle": "画像キャラ・高速型",
-      "image": "tralala-sample.png",
+      "image": "po.jpeg",
       "baseSpeed": 7,
       "growth": 0.35,
       "speedCap": 14,
       "themeColor": "#4a90d9"
     }
-  ]
+]
+  
 }
